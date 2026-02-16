@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
@@ -17,6 +16,11 @@ import { HubSettlementAbi } from "@hubris/abis";
 import { buildBatch } from "./batch";
 import { CircuitProofProvider, DevProofProvider, type ProofProvider } from "./proof";
 import type { QueuedAction } from "./types";
+import {
+  JsonProverQueueStore,
+  SqliteProverQueueStore,
+  type ProverQueueStore
+} from "./queue-store";
 
 type RequestWithMeta = express.Request & { rawBody?: string; requestId?: string };
 
@@ -73,8 +77,11 @@ app.use((req, res, next) => {
 });
 
 const port = Number(process.env.PROVER_PORT ?? 3050);
+const proverStoreKind = (process.env.PROVER_STORE_KIND ?? "json").toLowerCase();
 const queuePath = process.env.PROVER_QUEUE_PATH ?? path.join(process.cwd(), "data", "prover-queue.json");
 const statePath = process.env.PROVER_STATE_PATH ?? path.join(process.cwd(), "data", "prover-state.json");
+const dbPath = process.env.PROVER_DB_PATH ?? path.join(process.cwd(), "data", "prover.db");
+const initialBatchId = BigInt(process.env.PROVER_BATCH_START ?? "1");
 const mode = process.env.PROVER_MODE ?? "dev";
 const batchSize = Number(process.env.PROVER_BATCH_SIZE ?? 20);
 const internalAuthMaxSkewMs = Number(process.env.INTERNAL_API_AUTH_MAX_SKEW_MS ?? "60000");
@@ -158,18 +165,23 @@ const actionSchema = z.discriminatedUnion("kind", [
   })
 ]);
 
-const queue = loadQueue(queuePath);
-const persistedState = loadState(statePath);
-let nextBatchId =
-  persistedState.nextBatchId > 0n
-    ? persistedState.nextBatchId
-    : BigInt(process.env.PROVER_BATCH_START ?? "1");
+const queueStore: ProverQueueStore = proverStoreKind === "sqlite"
+  ? new SqliteProverQueueStore(dbPath, initialBatchId)
+  : new JsonProverQueueStore(queuePath, statePath, initialBatchId);
+let nextBatchId = queueStore.getNextBatchId(initialBatchId);
 
 app.use("/internal", requireInternalNetwork, requireInternalAuth);
 app.use(rateLimitMiddleware);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, mode, queued: queue.length, nextBatchId: nextBatchId.toString(), isFlushing });
+  res.json({
+    ok: true,
+    mode,
+    store: proverStoreKind,
+    queued: queueStore.getQueuedCount(),
+    nextBatchId: nextBatchId.toString(),
+    isFlushing
+  });
 });
 
 app.post("/internal/enqueue", (req, res) => {
@@ -181,24 +193,21 @@ app.post("/internal/enqueue", (req, res) => {
   }
 
   const action = normalizeAction(parsed.data);
-  const key = actionKey(action);
-  const alreadyQueued = queue.some((item) => actionKey(item) === key);
-  if (alreadyQueued) {
-    auditLog(req as RequestWithMeta, "enqueue_duplicate", { key });
-    res.json({ ok: true, queued: queue.length, duplicate: true });
+  const enqueueResult = queueStore.enqueue(action);
+  if (enqueueResult === "duplicate") {
+    auditLog(req as RequestWithMeta, "enqueue_duplicate");
+    res.json({ ok: true, queued: queueStore.getQueuedCount(), duplicate: true });
     return;
   }
 
-  queue.push(action);
-  saveQueue(queuePath, queue);
-  auditLog(req as RequestWithMeta, "enqueue_ok", { key, queued: queue.length });
-  res.json({ ok: true, queued: queue.length });
+  auditLog(req as RequestWithMeta, "enqueue_ok", { queued: queueStore.getQueuedCount() });
+  res.json({ ok: true, queued: queueStore.getQueuedCount() });
 });
 
 app.post("/internal/flush", async (_req, res) => {
   try {
     const settled = await flushQueue();
-    auditLog(_req as RequestWithMeta, "flush_ok", { settled, queued: queue.length });
+    auditLog(_req as RequestWithMeta, "flush_ok", { settled, queued: queueStore.getQueuedCount() });
     res.json({ ok: true, settled });
   } catch (error) {
     auditLog(_req as RequestWithMeta, "flush_error", { message: (error as Error).message });
@@ -208,6 +217,7 @@ app.post("/internal/flush", async (_req, res) => {
 
 app.listen(port, () => {
   console.log(`Prover service listening on :${port} (mode=${mode})`);
+  console.log(`Prover persistence store: kind=${proverStoreKind}`);
   startupPreflight().catch((error) => {
     console.error("Prover startup preflight failed", error);
     process.exit(1);
@@ -221,11 +231,13 @@ app.listen(port, () => {
 
 async function flushQueue() {
   if (isFlushing) return 0;
-  if (queue.length === 0) return 0;
+  if (queueStore.getQueuedCount() === 0) return 0;
   isFlushing = true;
 
   try {
-    const actions = queue.slice(0, batchSize);
+    const records = queueStore.peek(batchSize);
+    if (records.length === 0) return 0;
+    const actions = records.map((record) => record.action);
 
     const batch = buildBatch(nextBatchId, hubChainId, spokeChainId, actions);
     const { proof } = await proofProvider.prove(batch);
@@ -242,10 +254,8 @@ async function flushQueue() {
     await publicClient.waitForTransactionReceipt({ hash: txHash });
 
     // Persist queue + batch cursor immediately after on-chain success.
-    queue.splice(0, actions.length);
-    saveQueue(queuePath, queue);
     nextBatchId += 1n;
-    saveState(statePath, { nextBatchId });
+    queueStore.markSettled(records, nextBatchId);
 
     for (const action of actions) {
       if (action.kind === "supply" || action.kind === "repay") {
@@ -383,33 +393,6 @@ function normalizeAction(input: z.infer<typeof actionSchema>): QueuedAction {
     fee: BigInt(input.fee),
     relayer: input.relayer as Address
   };
-}
-
-function loadQueue(filePath: string): QueuedAction[] {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, "[]");
-    return [];
-  }
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Array<Record<string, string>>;
-    return raw.map((entry) => normalizeAction(entry as z.infer<typeof actionSchema>));
-  } catch {
-    return [];
-  }
-}
-
-function saveQueue(filePath: string, actions: QueuedAction[]) {
-  const json = actions.map((action) =>
-    JSON.parse(
-      JSON.stringify(action, (_, value) => {
-        if (typeof value === "bigint") return value.toString();
-        return value;
-      })
-    )
-  );
-  fs.writeFileSync(filePath, JSON.stringify(json, null, 2));
 }
 
 async function postInternal(baseUrl: string, routePath: string, body: Record<string, unknown>) {
@@ -563,19 +546,6 @@ function constantTimeHexEqual(a: string, b: string): boolean {
   }
 }
 
-function actionKey(action: QueuedAction): string {
-  switch (action.kind) {
-    case "supply":
-    case "repay":
-      return `${action.kind}:${action.depositId.toString()}:${action.user}:${action.hubAsset}:${action.amount.toString()}`;
-    case "borrow":
-    case "withdraw":
-      return `${action.kind}:${action.intentId}:${action.user}:${action.hubAsset}:${action.amount.toString()}:${action.fee.toString()}:${action.relayer}`;
-    default:
-      return JSON.stringify(action);
-  }
-}
-
 function rateLimitMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const now = Date.now();
   const isInternal = req.path.startsWith("/internal");
@@ -615,29 +585,6 @@ function auditLog(req: RequestWithMeta, action: string, fields?: Record<string, 
     }
   }
   console.log(JSON.stringify(payload));
-}
-
-type ProverState = {
-  nextBatchId: bigint;
-};
-
-function loadState(filePath: string): ProverState {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  if (!fs.existsSync(filePath)) {
-    const initial = { nextBatchId: 1n };
-    saveState(filePath, initial);
-    return initial;
-  }
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as { nextBatchId?: string };
-    return { nextBatchId: BigInt(raw.nextBatchId ?? "1") };
-  } catch {
-    return { nextBatchId: 1n };
-  }
-}
-
-function saveState(filePath: string, state: ProverState) {
-  fs.writeFileSync(filePath, JSON.stringify({ nextBatchId: state.nextBatchId.toString() }, null, 2));
 }
 
 function parseNativeWei(value: string): bigint {

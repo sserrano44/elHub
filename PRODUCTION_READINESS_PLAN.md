@@ -91,6 +91,12 @@ Current blockers:
   - `INTERNAL_API_TRUST_PROXY`
 - Caller allowlists must be validated per environment to avoid accidental over-permission.
 
+P0-3 gap note (next actions):
+1. Run staged ingress validation with real proxy chain (`INTERNAL_API_TRUST_PROXY`) and confirm no header spoofing path.
+2. Lock per-service caller allowlists per environment and add deployment-time config validation.
+3. Add key-rotation runbook execution evidence (planned + completed timestamps).
+4. Evaluate migration from shared-secret HMAC to mTLS/workload identity for production.
+
 Deliverables:
 1. Add service-to-service auth for internal routes:
    - HMAC signing or JWT with short TTL and audience checks.
@@ -125,16 +131,15 @@ Acceptance criteria:
 
 ### P0-4 Durable persistence and queue correctness
 
-Status: In progress (queue correctness improved; durable DB still pending).
+Status: In progress (transactional SQLite path landed; full production rollout still pending).
 
 Current blockers:
-- JSON-file storage for indexer and prover queue:
-  - `/services/indexer/src/store.ts`
-  - `/services/prover/src/server.ts`
-- Queue/update lifecycle is not transactional across:
-  - prover queue persistence
-  - on-chain receipt confirmation
-  - indexer mutation side effects
+- Legacy JSON mode remains default in local/dev until env rollout is flipped:
+  - `INDEXER_DB_KIND`
+  - `PROVER_STORE_KIND`
+- Relayer checkpoint persistence is still JSON-only:
+  - `/services/relayer/src/server.ts` (`RELAYER_TRACKING_PATH`)
+- Outbox/inbox and dead-letter flows are not implemented yet.
 
 Deliverables:
 1. Replace JSON state with Postgres (or equivalent) using transactions.
@@ -151,6 +156,12 @@ Implemented:
 2. Prover batch cursor (`nextBatchId`) persisted to disk state file.
 3. Prover enqueue deduplication added by action key.
 4. Concurrent flush guard added to avoid overlapping settlement attempts.
+5. Added transactional SQLite-backed indexer store (`SqliteIndexerStore`) with durable upsert semantics.
+6. Added prover queue/state abstraction with transactional SQLite mode (`SqliteProverQueueStore`).
+7. Added atomic queue-ack + batch cursor update on prover settlement success in SQLite mode.
+8. Added runtime backend toggles:
+   - `INDEXER_DB_KIND=json|sqlite`
+   - `PROVER_STORE_KIND=json|sqlite`
 
 Acceptance criteria:
 1. Service restart does not lose in-flight actions.
@@ -271,14 +282,15 @@ This section maps the plan to concrete code paths that are still production-sens
    - `/services/relayer/src/server.ts` (`mint` + `registerBridgedDeposit`)
 3. Custody still trusts role-based deposit registration rather than canonical bridge attestation:
    - `/contracts/src/hub/HubCustody.sol`
-4. Internal auth exists, but default secrets and wildcard CORS remain allowed defaults:
-   - `/services/indexer/src/server.ts`
-   - `/services/prover/src/server.ts`
-   - `/services/relayer/src/server.ts`
-5. Indexer/relayer/prover state is still JSON-file based and non-transactional:
-   - `/services/indexer/src/store.ts`
-   - `/services/prover/src/server.ts` (queue/state files)
-   - `/services/relayer/src/server.ts` (tracking file)
+4. Internal auth hardening is implemented; remaining gap is environment rollout validation:
+   - Remaining gap is environment rollout validation, not core enforcement:
+     - `/services/indexer/src/server.ts`
+     - `/services/prover/src/server.ts`
+     - `/services/relayer/src/server.ts`
+5. Durable storage rollout is partial:
+   - Indexer/prover now support transactional SQLite mode.
+   - Relayer checkpointing is still JSON-based.
+   - Postgres migration and outbox/DLQ are still pending.
 
 ---
 
@@ -311,6 +323,10 @@ Exit criteria:
 ---
 
 ### P0-4 Durable persistence and queue correctness
+
+Progress note:
+1. Transactional SQLite mode is now available for `indexer` and `prover` as an interim durable backend.
+2. Final target remains Postgres for production rollout and cross-service operational consistency.
 
 Implementation tasks:
 1. Replace JSON files with Postgres tables for:

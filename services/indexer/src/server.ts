@@ -3,7 +3,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import express from "express";
 import { z } from "zod";
 import type { IntentLifecycle } from "@hubris/sdk";
-import { JsonIndexerStore } from "./store";
+import { JsonIndexerStore, SqliteIndexerStore, type IndexerStore } from "./store";
 
 type RequestWithMeta = express.Request & { rawBody?: string; requestId?: string };
 
@@ -59,8 +59,12 @@ app.use((_req, res, next) => {
 });
 
 const port = Number(process.env.INDEXER_PORT ?? 3030);
-const dbPath = process.env.INDEXER_DB_PATH ?? path.join(process.cwd(), "data", "indexer.json");
-const store = new JsonIndexerStore(dbPath);
+const dbKind = (process.env.INDEXER_DB_KIND ?? "json").toLowerCase();
+const dbPath = process.env.INDEXER_DB_PATH
+  ?? path.join(process.cwd(), "data", dbKind === "sqlite" ? "indexer.db" : "indexer.json");
+const store: IndexerStore = dbKind === "sqlite"
+  ? new SqliteIndexerStore(dbPath)
+  : new JsonIndexerStore(dbPath);
 const internalAuthMaxSkewMs = Number(process.env.INTERNAL_API_AUTH_MAX_SKEW_MS ?? "60000");
 const apiRateWindowMs = Number(process.env.API_RATE_WINDOW_MS ?? "60000");
 const apiRateMaxRequests = Number(process.env.API_RATE_MAX_REQUESTS ?? "1200");
@@ -135,9 +139,14 @@ app.post("/internal/intents/upsert", (req, res) => {
 
   const payload = parsed.data;
   const entity: IntentLifecycle = {
-    ...payload,
     intentId: payload.intentId as `0x${string}`,
+    status: payload.status,
     user: payload.user as `0x${string}`,
+    intentType: payload.intentType,
+    amount: payload.amount,
+    token: payload.token as `0x${string}`,
+    txHash: payload.txHash as `0x${string}` | undefined,
+    metadata: payload.metadata,
     updatedAt: new Date().toISOString()
   };
 
@@ -185,7 +194,17 @@ app.post("/internal/deposits/upsert", (req, res) => {
     depositId: parsed.data.depositId,
     status: parsed.data.status
   });
-  res.json(store.upsertDeposit(parsed.data));
+  res.json(
+    store.upsertDeposit({
+      depositId: parsed.data.depositId,
+      user: parsed.data.user as `0x${string}`,
+      intentType: parsed.data.intentType,
+      token: parsed.data.token as `0x${string}`,
+      amount: parsed.data.amount,
+      status: parsed.data.status,
+      metadata: parsed.data.metadata
+    })
+  );
 });
 
 app.get("/deposits/:depositId", (req, res) => {
@@ -199,7 +218,7 @@ app.get("/deposits/:depositId", (req, res) => {
 
 app.listen(port, () => {
   console.log(`Indexer API listening on :${port}`);
-  console.log(`Indexer state file: ${dbPath}`);
+  console.log(`Indexer persistence: kind=${dbKind} path=${dbPath}`);
 });
 
 function requireInternalAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
