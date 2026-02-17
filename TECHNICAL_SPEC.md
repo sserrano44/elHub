@@ -438,10 +438,9 @@ Command:
 1. `pnpm test:e2e:fork`
 
 RPC resolution order:
-1. process env (`HUB_RPC_URL`, `SPOKE_RPC_URL`)
-2. `.env` (`HUB_RPC_URL`, `SPOKE_RPC_URL`)
-3. Tenderly fallback (`TENDERLY_BASE_RPC`, `TENDERLY_WORLDCHAIN_RPC`) from process env or `.env`
-4. localhost defaults (`8545/8546`)
+1. process env (`HUB_RPC_URL`, `SPOKE_NETWORK`, `SPOKE_<NETWORK>_RPC_URL`)
+2. `.env` with the same keys
+3. localhost defaults (`8545/8546`) for local worldchain flow
 
 ### 10.3 Scripted fork E2E (circuit mode)
 Script:

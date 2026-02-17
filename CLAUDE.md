@@ -120,14 +120,17 @@ All services use Express.js with Zod validation. Internal endpoints (`/internal/
 ## Key Environment Variables
 
 ```
-HUB_RPC_URL / SPOKE_RPC_URL          # Chain RPCs (default: localhost:8545/9545)
-HUB_CHAIN_ID=8453 / SPOKE_CHAIN_ID=480
+HUB_RPC_URL                          # Hub RPC (default: localhost:8545)
+HUB_CHAIN_ID=8453
+SPOKE_NETWORK=worldchain|ethereum|bsc
+SPOKE_<NETWORK>_RPC_URL              # Active spoke RPC (worldchain defaults to localhost:9545)
+SPOKE_<NETWORK>_CHAIN_ID             # Active spoke chain id
 INTERNAL_API_AUTH_SECRET              # HMAC key for inter-service auth
 PROVER_MODE=dev|circuit               # Proof generation mode
 PROVER_CIRCUIT_ARTIFACTS_DIR          # Path to circuit build artifacts
 ```
 
-Deployed addresses are auto-set by the deploy script. RPC resolution falls back: explicit env → Tenderly forks (.env) → localhost defaults.
+Deployed addresses are auto-set by the deploy script. RPC resolution falls back: explicit env → .env values → worldchain localhost defaults (for local dev).
 
 ## Foundry Specifics
 

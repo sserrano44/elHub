@@ -15,9 +15,47 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
 fi
 
 HUB_CHAIN_ID="${HUB_CHAIN_ID:-8453}"
-SPOKE_CHAIN_ID="${SPOKE_CHAIN_ID:-480}"
 HUB_RPC_PORT="${HUB_RPC_PORT:-8545}"
 SPOKE_RPC_PORT="${SPOKE_RPC_PORT:-9545}"
+SPOKE_NETWORK="${SPOKE_NETWORK:-worldchain}"
+
+normalize_spoke_network() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    worldchain) echo "worldchain" ;;
+    ethereum|eth) echo "ethereum" ;;
+    bsc|bnb) echo "bsc" ;;
+    *)
+      echo "Unsupported SPOKE_NETWORK=$1 (expected: worldchain, ethereum, bsc)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+SPOKE_NETWORK="$(normalize_spoke_network "$SPOKE_NETWORK")"
+case "$SPOKE_NETWORK" in
+  worldchain)
+    SPOKE_ENV_PREFIX="WORLDCHAIN"
+    SPOKE_LABEL="Worldchain"
+    SPOKE_DEFAULT_CHAIN_ID=480
+    ;;
+  ethereum)
+    SPOKE_ENV_PREFIX="ETHEREUM"
+    SPOKE_LABEL="Ethereum"
+    SPOKE_DEFAULT_CHAIN_ID=1
+    ;;
+  bsc)
+    SPOKE_ENV_PREFIX="BSC"
+    SPOKE_LABEL="BSC"
+    SPOKE_DEFAULT_CHAIN_ID=56
+    ;;
+esac
+
+SPOKE_CHAIN_VAR="SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID"
+SPOKE_RPC_VAR="SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL"
+SPOKE_CHAIN_ID="${!SPOKE_CHAIN_VAR:-$SPOKE_DEFAULT_CHAIN_ID}"
+SPOKE_RPC_URL="http://127.0.0.1:${SPOKE_RPC_PORT}"
 
 PIDS=()
 cleanup() {
@@ -33,8 +71,8 @@ echo "Starting Base-local anvil on :${HUB_RPC_PORT}"
 anvil --port "$HUB_RPC_PORT" --chain-id "$HUB_CHAIN_ID" --block-time 1 >/tmp/zkhub-anvil-base.log 2>&1 &
 PIDS+=("$!")
 
-echo "Starting Worldchain-local anvil on :${SPOKE_RPC_PORT}"
-anvil --port "$SPOKE_RPC_PORT" --chain-id "$SPOKE_CHAIN_ID" --block-time 1 >/tmp/zkhub-anvil-world.log 2>&1 &
+echo "Starting ${SPOKE_LABEL}-local anvil on :${SPOKE_RPC_PORT}"
+anvil --port "$SPOKE_RPC_PORT" --chain-id "$SPOKE_CHAIN_ID" --block-time 1 >/tmp/zkhub-anvil-${SPOKE_NETWORK}.log 2>&1 &
 PIDS+=("$!")
 
 rpc_ready() {
@@ -50,6 +88,12 @@ for _ in {1..30}; do
   fi
   sleep 1
 done
+
+export HUB_CHAIN_ID
+export HUB_RPC_URL="http://127.0.0.1:${HUB_RPC_PORT}"
+export SPOKE_NETWORK
+export "${SPOKE_CHAIN_VAR}=${SPOKE_CHAIN_ID}"
+export "${SPOKE_RPC_VAR}=${SPOKE_RPC_URL}"
 
 echo "Deploying local contracts"
 bash ./contracts/script/deploy-local.sh

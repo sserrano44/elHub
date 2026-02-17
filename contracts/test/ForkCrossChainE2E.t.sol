@@ -45,9 +45,9 @@ contract ForkCrossChainE2ETest is TestBase {
 
     bool internal forkReady;
     uint256 internal baseForkId;
-    uint256 internal worldForkId;
+    uint256 internal spokeForkId;
     uint256 internal baseChainId;
-    uint256 internal worldChainId;
+    uint256 internal spokeChainId;
 
     address internal user;
     address internal relayer;
@@ -78,10 +78,10 @@ contract ForkCrossChainE2ETest is TestBase {
         }
 
         string memory baseForkUrl = _readBaseForkUrl();
-        string memory worldForkUrl = _readWorldForkUrl();
+        string memory spokeForkUrl = _readSpokeForkUrl();
 
         baseForkId = vm.createFork(baseForkUrl);
-        worldForkId = vm.createFork(worldForkUrl);
+        spokeForkId = vm.createFork(spokeForkUrl);
 
         user = vm.addr(USER_PK);
         relayer = vm.addr(RELAYER_PK);
@@ -90,8 +90,8 @@ contract ForkCrossChainE2ETest is TestBase {
         vm.selectFork(baseForkId);
         baseChainId = block.chainid;
 
-        vm.selectFork(worldForkId);
-        worldChainId = block.chainid;
+        vm.selectFork(spokeForkId);
+        spokeChainId = block.chainid;
         spokeUsdc = new MockERC20("Spoke USDC", "USDC", 6);
         spokeWeth = new MockERC20("Spoke WETH", "WETH", 18);
         portal = new SpokePortal(address(this), baseChainId);
@@ -150,7 +150,7 @@ contract ForkCrossChainE2ETest is TestBase {
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(borrowIntent, signature);
 
-        vm.selectFork(worldForkId);
+        vm.selectFork(spokeForkId);
         spokeUsdc.mint(relayer, borrowUsdcAmount);
         uint256 userSpokeUsdcBefore = spokeUsdc.balanceOf(user);
 
@@ -163,7 +163,7 @@ contract ForkCrossChainE2ETest is TestBase {
         assertEq(
             userSpokeUsdcAfter,
             userSpokeUsdcBefore + (borrowUsdcAmount - relayerFee),
-            "user should receive borrow proceeds on worldchain"
+            "user should receive borrow proceeds on spoke"
         );
 
         vm.selectFork(baseForkId);
@@ -191,7 +191,7 @@ contract ForkCrossChainE2ETest is TestBase {
         DataTypes.SettlementBatch memory batch = DataTypes.SettlementBatch({
             batchId: 1,
             hubChainId: baseChainId,
-            spokeChainId: worldChainId,
+            spokeChainId: spokeChainId,
             actionsRoot: bytes32(0),
             supplyCredits: new DataTypes.SupplyCredit[](0),
             repayCredits: new DataTypes.RepayCredit[](0),
@@ -272,7 +272,7 @@ contract ForkCrossChainE2ETest is TestBase {
         oracle.setPrice(address(hubUsdc), 1e8);
         oracle.setPrice(BASE_WETH, 3_000e8);
 
-        vm.selectFork(worldForkId);
+        vm.selectFork(spokeForkId);
         portal.setHubRecipient(address(custody));
         vm.selectFork(baseForkId);
     }
@@ -286,7 +286,7 @@ contract ForkCrossChainE2ETest is TestBase {
             intentType: Constants.INTENT_BORROW,
             user: user,
             inputChainId: baseChainId,
-            outputChainId: worldChainId,
+            outputChainId: spokeChainId,
             inputToken: BASE_WETH,
             outputToken: address(spokeUsdc),
             amount: amount,
@@ -324,19 +324,48 @@ contract ForkCrossChainE2ETest is TestBase {
         }
     }
 
-    function _readWorldForkUrl() internal returns (string memory) {
-        try vm.envString("WORLDCHAIN_FORK_URL") returns (string memory value) {
-            return value;
-        } catch {
-            try vm.envString("WORLDCHAIN_RPC_URL") returns (string memory fallbackValue) {
-                return fallbackValue;
+    function _readSpokeForkUrl() internal returns (string memory) {
+        bytes32 network = _readSpokeNetwork();
+        bytes32 worldchain = keccak256(bytes("worldchain"));
+        bytes32 ethereum = keccak256(bytes("ethereum"));
+        bytes32 bsc = keccak256(bytes("bsc"));
+
+        if (network == worldchain) {
+            try vm.envString("SPOKE_WORLDCHAIN_RPC_URL") returns (string memory value) {
+                return value;
             } catch {
-                try vm.envString("WORLD_FORK_URL") returns (string memory fallbackValue2) {
-                    return fallbackValue2;
-                } catch {
-                    return "http://127.0.0.1:8546";
-                }
+                return "http://127.0.0.1:8546";
             }
         }
+
+        if (network == ethereum) {
+            try vm.envString("SPOKE_ETHEREUM_RPC_URL") returns (string memory value) {
+                return value;
+            } catch {
+                revert("Set SPOKE_ETHEREUM_RPC_URL for SPOKE_NETWORK=ethereum");
+            }
+        }
+
+        if (network == bsc) {
+            try vm.envString("SPOKE_BSC_RPC_URL") returns (string memory value) {
+                return value;
+            } catch {
+                revert("Set SPOKE_BSC_RPC_URL for SPOKE_NETWORK=bsc");
+            }
+        }
+
+        revert("Unsupported SPOKE_NETWORK");
+    }
+
+    function _readSpokeNetwork() internal returns (bytes32) {
+        string memory network = "worldchain";
+        try vm.envString("SPOKE_NETWORK") returns (string memory value) {
+            network = value;
+        } catch {}
+
+        bytes32 hash = keccak256(bytes(network));
+        if (hash == keccak256(bytes("eth"))) return keccak256(bytes("ethereum"));
+        if (hash == keccak256(bytes("bnb"))) return keccak256(bytes("bsc"));
+        return hash;
     }
 }

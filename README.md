@@ -136,31 +136,33 @@ Notes:
   - full lifecycle: borrow -> repay -> withdraw collateral
   - liquidation when ETH price drops below safe collateralization
 
-### Cross-chain fork E2E test (Base + Worldchain, lock/fill/settle)
+### Cross-chain fork E2E test (Base + selected spoke, lock/fill/settle)
 
-With Base fork on `:8545` and Worldchain fork on `:8546`:
+With Base fork on `:8545` and spoke fork on `:8546`:
 
 ```bash
 cd contracts
 RUN_FORK_TESTS=1 \
 BASE_FORK_URL=http://127.0.0.1:8545 \
-WORLDCHAIN_FORK_URL=http://127.0.0.1:8546 \
+SPOKE_NETWORK=worldchain \
+SPOKE_WORLDCHAIN_RPC_URL=http://127.0.0.1:8546 \
 forge test --match-contract ForkCrossChainE2ETest -vv
 ```
 
 This test executes:
 1. supply ETH collateral on Base hub market
 2. sign + lock borrow intent on Base
-3. fill borrow on Worldchain spoke
+3. fill borrow on selected spoke
 4. settle batch on Base and verify debt + relayer reimbursement + lock consumption
 
-### Fork E2E (Base + Worldchain forks)
+### Fork E2E (Base + selected spoke forks)
 
-If you run Base fork on `:8545` and Worldchain fork on `:8546`, execute:
+If you run Base fork on `:8545` and spoke fork on `:8546`, execute:
 
 ```bash
 HUB_RPC_URL=http://127.0.0.1:8545 \
-SPOKE_RPC_URL=http://127.0.0.1:8546 \
+SPOKE_NETWORK=worldchain \
+SPOKE_WORLDCHAIN_RPC_URL=http://127.0.0.1:8546 \
 pnpm test:e2e:fork
 ```
 
@@ -174,16 +176,14 @@ The E2E runner will:
 Notes:
 1. `scripts/e2e-fork.mjs` now reads `.env` automatically.
 2. RPC resolution order:
-   1. explicit process env (`HUB_RPC_URL`, `SPOKE_RPC_URL`)
-   2. `.env` (`HUB_RPC_URL` / `SPOKE_RPC_URL`)
-   3. Tenderly fallback (`TENDERLY_BASE_RPC`, `TENDERLY_WORLDCHAIN_RPC`) from process env or `.env`
-   4. localhost defaults (`8545/8546`)
-3. This allows running the same command directly against Tenderly RPC endpoints if they are set in `.env`.
+   1. explicit process env (`HUB_RPC_URL`, `SPOKE_NETWORK`, `SPOKE_<NETWORK>_RPC_URL`)
+   2. `.env` with the same keys
+   3. worldchain local fallback (`http://127.0.0.1:8546`) only when `SPOKE_NETWORK=worldchain`
+3. This allows switching spokes by changing `SPOKE_NETWORK` plus one spoke RPC variable.
 4. When RPCs are Tenderly, `scripts/e2e-fork.mjs` can fund deployer/relayer/bridge/prover with `tenderly_setBalance` (Admin RPC).
 5. Optional Tenderly Admin RPC envs:
-   1. `HUB_ADMIN_RPC_URL` or `TENDERLY_BASE_ADMIN_RPC`
-   2. `SPOKE_ADMIN_RPC_URL` or `TENDERLY_WORLDCHAIN_ADMIN_RPC`
-   3. If not provided, the script falls back to `HUB_RPC_URL`/`SPOKE_RPC_URL`.
+   1. `HUB_ADMIN_RPC_URL` (falls back to `HUB_RPC_URL`)
+   2. `SPOKE_<NETWORK>_ADMIN_RPC_URL` (falls back to `SPOKE_<NETWORK>_RPC_URL`)
 6. Funding knobs:
    1. `E2E_USE_TENDERLY_FUNDING` (default `1`)
    2. `E2E_MIN_DEPLOYER_GAS_ETH` (default `2`)
@@ -201,11 +201,7 @@ This flow enforces:
 ```bash
 # Option A: Local anvil forks
 anvil --fork-url "$BASE_RPC_URL" --port 8545
-anvil --fork-url "$WORLDCHAIN_RPC_URL" --port 8546
-
-# Option B: Tenderly (set these in .env)
-# TENDERLY_BASE_RPC=...
-# TENDERLY_WORLDCHAIN_RPC=...
+anvil --fork-url "$SPOKE_WORLDCHAIN_RPC_URL" --port 8546
 ```
 
 #### 2) Build circuit artifacts

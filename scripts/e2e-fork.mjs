@@ -23,12 +23,24 @@ const rootDir = path.resolve(__dirname, "..");
 const contractsDir = path.join(rootDir, "contracts");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
 
-const HUB_RPC_URL = resolveRpcUrl("HUB_RPC_URL", "TENDERLY_BASE_RPC", "http://127.0.0.1:8545");
-const SPOKE_RPC_URL = resolveRpcUrl("SPOKE_RPC_URL", "TENDERLY_WORLDCHAIN_RPC", "http://127.0.0.1:8546");
-const HUB_ADMIN_RPC_URL = resolveRpcUrl("HUB_ADMIN_RPC_URL", "TENDERLY_BASE_ADMIN_RPC", HUB_RPC_URL);
-const SPOKE_ADMIN_RPC_URL = resolveRpcUrl("SPOKE_ADMIN_RPC_URL", "TENDERLY_WORLDCHAIN_ADMIN_RPC", SPOKE_RPC_URL);
-const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? dotEnv.HUB_CHAIN_ID ?? "8453");
-const SPOKE_CHAIN_ID = Number(process.env.SPOKE_CHAIN_ID ?? dotEnv.SPOKE_CHAIN_ID ?? "480");
+const SPOKE_NETWORKS = {
+  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 },
+  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
+  bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
+};
+
+const HUB_RPC_URL = resolveEnvValue("HUB_RPC_URL", "http://127.0.0.1:8545");
+const HUB_ADMIN_RPC_URL = resolveEnvValue("HUB_ADMIN_RPC_URL", HUB_RPC_URL);
+const HUB_CHAIN_ID = Number(resolveEnvValue("HUB_CHAIN_ID", "8453"));
+const SPOKE = resolveSpokeConfig("http://127.0.0.1:8546");
+const SPOKE_NETWORK = SPOKE.network;
+const SPOKE_LABEL = SPOKE.label;
+const SPOKE_CHAIN_ID = SPOKE.chainId;
+const SPOKE_RPC_URL = SPOKE.rpcUrl;
+const SPOKE_ADMIN_RPC_URL = SPOKE.adminRpcUrl;
+const SPOKE_CHAIN_KEY = SPOKE.chainKey;
+const SPOKE_RPC_KEY = SPOKE.rpcKey;
+const SPOKE_ADMIN_RPC_KEY = SPOKE.adminRpcKey;
 const INTERNAL_API_AUTH_SECRET =
   process.env.INTERNAL_API_AUTH_SECRET
   ?? dotEnv.INTERNAL_API_AUTH_SECRET
@@ -96,9 +108,10 @@ async function main() {
     env: {
       ...process.env,
       HUB_RPC_URL,
-      SPOKE_RPC_URL,
       HUB_CHAIN_ID: String(HUB_CHAIN_ID),
-      SPOKE_CHAIN_ID: String(SPOKE_CHAIN_ID),
+      SPOKE_NETWORK,
+      [SPOKE_RPC_KEY]: SPOKE_RPC_URL,
+      [SPOKE_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
       INTERNAL_API_AUTH_SECRET
     }
   });
@@ -132,6 +145,10 @@ async function main() {
     SPOKE_RPC_URL,
     HUB_CHAIN_ID: String(HUB_CHAIN_ID),
     SPOKE_CHAIN_ID: String(SPOKE_CHAIN_ID),
+    SPOKE_NETWORK,
+    [SPOKE_RPC_KEY]: SPOKE_RPC_URL,
+    [SPOKE_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
+    [SPOKE_ADMIN_RPC_KEY]: SPOKE_ADMIN_RPC_URL,
     INTERNAL_API_AUTH_SECRET,
     RELAYER_PRIVATE_KEY: relayerPrivateKey,
     BRIDGE_PRIVATE_KEY: bridgePrivateKey,
@@ -172,7 +189,7 @@ async function main() {
   });
   const spokeChain = defineChain({
     id: SPOKE_CHAIN_ID,
-    name: "Worldchain Fork",
+    name: `${SPOKE_LABEL} Fork`,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [SPOKE_RPC_URL] } }
   });
@@ -772,12 +789,46 @@ function loadDotEnv(filePath) {
   return values;
 }
 
-function resolveRpcUrl(primaryKey, tenderlyKey, fallback) {
-  return (
-    process.env[primaryKey]
-    ?? dotEnv[primaryKey]
-    ?? process.env[tenderlyKey]
-    ?? dotEnv[tenderlyKey]
-    ?? fallback
+function resolveEnvValue(key, fallback = "") {
+  return process.env[key] ?? dotEnv[key] ?? fallback;
+}
+
+function resolveSpokeConfig(defaultRpcUrl = "") {
+  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "worldchain"));
+  const config = SPOKE_NETWORKS[network];
+  const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
+  const rpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
+  const adminRpcKey = `SPOKE_${config.envPrefix}_ADMIN_RPC_URL`;
+
+  const chainId = Number(resolveEnvValue(chainKey, String(config.defaultChainId)));
+  if (!Number.isInteger(chainId) || chainId <= 0) {
+    throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
+  }
+
+  const rpcUrl = resolveEnvValue(rpcKey, network === "worldchain" ? defaultRpcUrl : "");
+  if (!rpcUrl) {
+    throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
+  }
+
+  return {
+    network,
+    label: config.label,
+    chainId,
+    rpcUrl,
+    adminRpcUrl: resolveEnvValue(adminRpcKey, rpcUrl),
+    chainKey,
+    rpcKey,
+    adminRpcKey
+  };
+}
+
+function normalizeSpokeNetwork(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "bnb") return "bsc";
+  if (normalized === "eth") return "ethereum";
+  if (normalized in SPOKE_NETWORKS) return normalized;
+
+  throw new Error(
+    `Unsupported SPOKE_NETWORK=${value}. Use one of: ${Object.keys(SPOKE_NETWORKS).join(", ")}`
   );
 }

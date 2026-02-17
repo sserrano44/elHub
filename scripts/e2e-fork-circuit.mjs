@@ -10,6 +10,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
+const SPOKE_NETWORKS = {
+  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 },
+  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
+  bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
+};
 
 const artifactsDir = process.env.PROVER_CIRCUIT_ARTIFACTS_DIR
   ?? path.join(rootDir, "circuits", "prover", "artifacts");
@@ -22,10 +27,14 @@ const groth16VerifierAddress =
   process.env.HUB_GROTH16_VERIFIER_ADDRESS
   ?? dotEnv.HUB_GROTH16_VERIFIER_ADDRESS
   ?? "";
-const hubRpcUrl = resolveRpcUrl("HUB_RPC_URL", "TENDERLY_BASE_RPC", "http://127.0.0.1:8545");
-const spokeRpcUrl = resolveRpcUrl("SPOKE_RPC_URL", "TENDERLY_WORLDCHAIN_RPC", "http://127.0.0.1:8546");
-const hubChainId = process.env.HUB_CHAIN_ID ?? dotEnv.HUB_CHAIN_ID ?? "8453";
-const spokeChainId = process.env.SPOKE_CHAIN_ID ?? dotEnv.SPOKE_CHAIN_ID ?? "480";
+const hubRpcUrl = resolveEnvValue("HUB_RPC_URL", "http://127.0.0.1:8545");
+const hubChainId = resolveEnvValue("HUB_CHAIN_ID", "8453");
+const spoke = resolveSpokeConfig("http://127.0.0.1:8546");
+const spokeRpcUrl = spoke.rpcUrl;
+const spokeChainId = String(spoke.chainId);
+const spokeNetwork = spoke.network;
+const spokeChainKey = spoke.chainKey;
+const spokeRpcKey = spoke.rpcKey;
 const configuredSnarkjsBin = process.env.PROVER_SNARKJS_BIN ?? dotEnv.PROVER_SNARKJS_BIN ?? "";
 
 main().catch((error) => {
@@ -42,9 +51,10 @@ async function main() {
     env: {
       ...process.env,
       HUB_RPC_URL: hubRpcUrl,
-      SPOKE_RPC_URL: spokeRpcUrl,
       HUB_CHAIN_ID: hubChainId,
-      SPOKE_CHAIN_ID: spokeChainId,
+      SPOKE_NETWORK: spokeNetwork,
+      [spokeRpcKey]: spokeRpcUrl,
+      [spokeChainKey]: spokeChainId,
       E2E_PROVER_MODE: "circuit",
       HUB_VERIFIER_DEV_MODE: "0",
       HUB_GROTH16_VERIFIER_ADDRESS: groth16VerifierAddress,
@@ -107,13 +117,43 @@ function uniqueNonEmpty(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
 }
 
-function resolveRpcUrl(primaryKey, tenderlyKey, fallback) {
-  return (
-    process.env[primaryKey]
-    ?? dotEnv[primaryKey]
-    ?? process.env[tenderlyKey]
-    ?? dotEnv[tenderlyKey]
-    ?? fallback
+function resolveEnvValue(key, fallback = "") {
+  return process.env[key] ?? dotEnv[key] ?? fallback;
+}
+
+function resolveSpokeConfig(defaultRpcUrl = "") {
+  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "worldchain"));
+  const config = SPOKE_NETWORKS[network];
+  const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
+  const rpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
+
+  const chainId = Number(resolveEnvValue(chainKey, String(config.defaultChainId)));
+  if (!Number.isInteger(chainId) || chainId <= 0) {
+    throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
+  }
+
+  const rpcUrl = resolveEnvValue(rpcKey, network === "worldchain" ? defaultRpcUrl : "");
+  if (!rpcUrl) {
+    throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
+  }
+
+  return {
+    network,
+    chainId,
+    rpcUrl,
+    chainKey,
+    rpcKey
+  };
+}
+
+function normalizeSpokeNetwork(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "bnb") return "bsc";
+  if (normalized === "eth") return "ethereum";
+  if (normalized in SPOKE_NETWORKS) return normalized;
+
+  throw new Error(
+    `Unsupported SPOKE_NETWORK=${value}. Use one of: ${Object.keys(SPOKE_NETWORKS).join(", ")}`
   );
 }
 

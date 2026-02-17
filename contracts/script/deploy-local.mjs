@@ -23,14 +23,34 @@ const contractsDir = path.resolve(rootDir, "contracts");
 const outDir = path.resolve(contractsDir, "out");
 const deploymentsDir = path.resolve(contractsDir, "deployments");
 
+const SPOKE_NETWORK_DEFAULTS = {
+  worldchain: { label: "Worldchain", chainId: 480, rpcUrl: "http://127.0.0.1:9545" },
+  ethereum: { label: "Ethereum", chainId: 1, rpcUrl: "" },
+  bsc: { label: "BSC", chainId: 56, rpcUrl: "" }
+};
+
 const HUB_RPC_URL = process.env.HUB_RPC_URL ?? "http://127.0.0.1:8545";
-const SPOKE_RPC_URL = process.env.SPOKE_RPC_URL ?? "http://127.0.0.1:9545";
 const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? 8453);
-const SPOKE_CHAIN_ID = Number(process.env.SPOKE_CHAIN_ID ?? 480);
+const SPOKE_NETWORK = normalizeSpokeNetwork(process.env.SPOKE_NETWORK ?? "worldchain");
+const SPOKE_ENV_PREFIX = SPOKE_NETWORK.toUpperCase();
+const SPOKE_NETWORK_CONFIG = SPOKE_NETWORK_DEFAULTS[SPOKE_NETWORK];
+const SPOKE_CHAIN_ID = Number(process.env[`SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID`] ?? SPOKE_NETWORK_CONFIG.chainId);
+const SPOKE_RPC_URL = process.env[`SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL`] ?? SPOKE_NETWORK_CONFIG.rpcUrl;
 const HUB_VERIFIER_DEV_MODE = (process.env.HUB_VERIFIER_DEV_MODE ?? "1") !== "0";
 const HUB_DEV_PROOF_TEXT = process.env.HUB_DEV_PROOF_TEXT ?? "ZKHUB_DEV_PROOF";
 const HUB_GROTH16_VERIFIER_ADDRESS = process.env.HUB_GROTH16_VERIFIER_ADDRESS ?? "";
 const INTERNAL_API_AUTH_SECRET = process.env.INTERNAL_API_AUTH_SECRET ?? "dev-internal-auth-secret";
+
+if (!Number.isInteger(SPOKE_CHAIN_ID) || SPOKE_CHAIN_ID <= 0) {
+  throw new Error(
+    `Invalid SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID for SPOKE_NETWORK=${SPOKE_NETWORK}: ${SPOKE_CHAIN_ID}`
+  );
+}
+if (!SPOKE_RPC_URL) {
+  throw new Error(
+    `Missing SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL for SPOKE_NETWORK=${SPOKE_NETWORK}`
+  );
+}
 
 const DEPLOYER_PRIVATE_KEY =
   process.env.DEPLOYER_PRIVATE_KEY ?? "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -54,7 +74,7 @@ const hubChain = defineChain({
 
 const spokeChain = defineChain({
   id: SPOKE_CHAIN_ID,
-  name: "Worldchain Local",
+  name: `${SPOKE_NETWORK_CONFIG.label} Local`,
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [SPOKE_RPC_URL] } }
 });
@@ -355,6 +375,7 @@ async function main() {
       settlement
     },
     spoke: {
+      network: SPOKE_NETWORK,
       chainId: SPOKE_CHAIN_ID,
       portal: spokePortal,
       bridgeAdapter: spokeBridgeAdapter
@@ -383,6 +404,9 @@ async function main() {
 SPOKE_RPC_URL=${SPOKE_RPC_URL}
 HUB_CHAIN_ID=${HUB_CHAIN_ID}
 SPOKE_CHAIN_ID=${SPOKE_CHAIN_ID}
+SPOKE_NETWORK=${SPOKE_NETWORK}
+SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL=${SPOKE_RPC_URL}
+SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID=${SPOKE_CHAIN_ID}
 
 HUB_LOCK_MANAGER_ADDRESS=${lockManager}
 HUB_SETTLEMENT_ADDRESS=${settlement}
@@ -400,6 +424,7 @@ NEXT_PUBLIC_HUB_RPC_URL=${HUB_RPC_URL}
 NEXT_PUBLIC_SPOKE_RPC_URL=${SPOKE_RPC_URL}
 NEXT_PUBLIC_HUB_CHAIN_ID=${HUB_CHAIN_ID}
 NEXT_PUBLIC_SPOKE_CHAIN_ID=${SPOKE_CHAIN_ID}
+NEXT_PUBLIC_SPOKE_NETWORK=${SPOKE_NETWORK}
 NEXT_PUBLIC_RELAYER_API_URL=http://127.0.0.1:3040
 NEXT_PUBLIC_INDEXER_API_URL=http://127.0.0.1:3030
 INTERNAL_API_AUTH_SECRET=${INTERNAL_API_AUTH_SECRET}
@@ -425,3 +450,14 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+function normalizeSpokeNetwork(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "bnb") return "bsc";
+  if (normalized === "eth") return "ethereum";
+  if (normalized in SPOKE_NETWORK_DEFAULTS) return normalized;
+
+  throw new Error(
+    `Unsupported SPOKE_NETWORK=${value}. Use one of: ${Object.keys(SPOKE_NETWORK_DEFAULTS).join(", ")}`
+  );
+}

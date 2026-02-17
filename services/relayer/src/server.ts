@@ -112,6 +112,7 @@ const bridgeWallet = createWalletClient({ account: bridgeAccount, transport: htt
 
 const trackingPath = process.env.RELAYER_TRACKING_PATH ?? path.join(process.cwd(), "data", "relayer-tracking.json");
 const tracking = loadTracking(trackingPath);
+let isPollingSpokeDeposits = false;
 
 const submitSchema = z.object({
   intent: z.object({
@@ -310,54 +311,61 @@ function rawIntentId(intent: Intent): Hex {
 }
 
 async function pollSpokeDeposits() {
-  const toBlock = await spokePublic.getBlockNumber();
-  if (toBlock < tracking.lastSpokeBlock) {
-    // Local anvil restarts can rewind chain height; restart scanning from genesis.
-    tracking.lastSpokeBlock = 0n;
+  if (isPollingSpokeDeposits) return;
+  isPollingSpokeDeposits = true;
+
+  try {
+    const toBlock = await spokePublic.getBlockNumber();
+    if (toBlock < tracking.lastSpokeBlock) {
+      // Local anvil restarts can rewind chain height; restart scanning from genesis.
+      tracking.lastSpokeBlock = 0n;
+    }
+
+    if (tracking.lastSpokeBlock === 0n && toBlock > relayerInitialBackfillBlocks) {
+      tracking.lastSpokeBlock = toBlock - relayerInitialBackfillBlocks;
+    }
+
+    const fromBlock = tracking.lastSpokeBlock + 1n;
+    if (toBlock < fromBlock) return;
+    const rangeToBlock = fromBlock + relayerMaxLogRange - 1n < toBlock ? fromBlock + relayerMaxLogRange - 1n : toBlock;
+
+    auditLog(undefined, "poll_range", {
+      fromBlock: fromBlock.toString(),
+      toBlock: rangeToBlock.toString(),
+      latest: toBlock.toString()
+    });
+
+    const supplyLogs = await spokePublic.getLogs({
+      address: portalAddress,
+      event: parseAbiItem(
+        "event SupplyInitiated(uint256 indexed depositId, address indexed user, address indexed token, uint256 amount, uint256 hubChainId, uint256 timestamp)"
+      ),
+      fromBlock,
+      toBlock: rangeToBlock
+    });
+
+    const repayLogs = await spokePublic.getLogs({
+      address: portalAddress,
+      event: parseAbiItem(
+        "event RepayInitiated(uint256 indexed depositId, address indexed user, address indexed token, uint256 amount, uint256 hubChainId, uint256 timestamp)"
+      ),
+      fromBlock,
+      toBlock: rangeToBlock
+    });
+
+    for (const log of supplyLogs) {
+      await handleDepositLog(log.args.depositId as bigint, log.args.user as Address, log.args.token as Address, log.args.amount as bigint, IntentType.SUPPLY);
+    }
+
+    for (const log of repayLogs) {
+      await handleDepositLog(log.args.depositId as bigint, log.args.user as Address, log.args.token as Address, log.args.amount as bigint, IntentType.REPAY);
+    }
+
+    tracking.lastSpokeBlock = rangeToBlock;
+    saveTracking(trackingPath, tracking);
+  } finally {
+    isPollingSpokeDeposits = false;
   }
-
-  if (tracking.lastSpokeBlock === 0n && toBlock > relayerInitialBackfillBlocks) {
-    tracking.lastSpokeBlock = toBlock - relayerInitialBackfillBlocks;
-  }
-
-  const fromBlock = tracking.lastSpokeBlock + 1n;
-  if (toBlock < fromBlock) return;
-  const rangeToBlock = fromBlock + relayerMaxLogRange - 1n < toBlock ? fromBlock + relayerMaxLogRange - 1n : toBlock;
-
-  auditLog(undefined, "poll_range", {
-    fromBlock: fromBlock.toString(),
-    toBlock: rangeToBlock.toString(),
-    latest: toBlock.toString()
-  });
-
-  const supplyLogs = await spokePublic.getLogs({
-    address: portalAddress,
-    event: parseAbiItem(
-      "event SupplyInitiated(uint256 indexed depositId, address indexed user, address indexed token, uint256 amount, uint256 hubChainId, uint256 timestamp)"
-    ),
-    fromBlock,
-    toBlock: rangeToBlock
-  });
-
-  const repayLogs = await spokePublic.getLogs({
-    address: portalAddress,
-    event: parseAbiItem(
-      "event RepayInitiated(uint256 indexed depositId, address indexed user, address indexed token, uint256 amount, uint256 hubChainId, uint256 timestamp)"
-    ),
-    fromBlock,
-    toBlock: rangeToBlock
-  });
-
-  for (const log of supplyLogs) {
-    await handleDepositLog(log.args.depositId as bigint, log.args.user as Address, log.args.token as Address, log.args.amount as bigint, IntentType.SUPPLY);
-  }
-
-  for (const log of repayLogs) {
-    await handleDepositLog(log.args.depositId as bigint, log.args.user as Address, log.args.token as Address, log.args.amount as bigint, IntentType.REPAY);
-  }
-
-  tracking.lastSpokeBlock = rangeToBlock;
-  saveTracking(trackingPath, tracking);
 }
 
 async function handleDepositLog(
@@ -373,12 +381,9 @@ async function handleDepositLog(
     return;
   }
 
-  const existing = await fetch(`${indexerApi}/deposits/${depositId.toString()}`).catch(() => null);
-  if (existing && existing.ok) {
-    const payload = (await existing.json()) as { status?: string };
-    if (payload.status === "settled" || payload.status === "bridged") {
-      return;
-    }
+  const status = await fetchDepositStatus(depositId);
+  if (status === "settled" || status === "bridged") {
+    return;
   }
 
   await postInternal(indexerApi, "/internal/deposits/upsert", {
@@ -415,6 +420,11 @@ async function handleDepositLog(
     console.warn(`Bridge registration skipped for deposit ${depositId.toString()}: ${(error as Error).message}`);
   }
 
+  const latestStatus = await fetchDepositStatus(depositId);
+  if (latestStatus === "settled" || latestStatus === "bridged") {
+    return;
+  }
+
   await postInternal(indexerApi, "/internal/deposits/upsert", {
     depositId: Number(depositId),
     user,
@@ -435,6 +445,13 @@ async function handleDepositLog(
     hubAsset: hubToken,
     amount: amount.toString()
   });
+}
+
+async function fetchDepositStatus(depositId: bigint): Promise<string | undefined> {
+  const existing = await fetch(`${indexerApi}/deposits/${depositId.toString()}`).catch(() => null);
+  if (!existing || !existing.ok) return undefined;
+  const payload = (await existing.json()) as { status?: string };
+  return payload.status;
 }
 
 async function enqueueProverAction(body: Record<string, unknown>) {
