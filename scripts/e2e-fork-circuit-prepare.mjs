@@ -11,14 +11,13 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
 const SPOKE_NETWORKS = {
-  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 },
-  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
+  base: { envPrefix: "BASE", label: "Base", defaultChainId: 8453 },
   bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
 };
 
 const HUB_RPC_URL = resolveEnvValue("HUB_RPC_URL", "");
 const HUB_RPC_SOURCE = resolveEnvSource("HUB_RPC_URL", "unset");
-const HUB_CHAIN_ID = resolveEnvValue("HUB_CHAIN_ID", "8453");
+const HUB_CHAIN_ID = resolveEnvValue("HUB_CHAIN_ID", "1");
 const SPOKE = resolveSpokeConfig("");
 const SPOKE_NETWORK = SPOKE.network;
 const SPOKE_RPC_URL = SPOKE.rpcUrl;
@@ -357,7 +356,7 @@ function resolveEnvSource(key, fallback = "unset") {
 }
 
 function resolveSpokeConfig(defaultRpcUrl = "") {
-  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "worldchain"));
+  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "base"));
   const networkSource = resolveEnvSource("SPOKE_NETWORK", "default");
   const config = SPOKE_NETWORKS[network];
   const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
@@ -368,7 +367,7 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
     throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
   }
 
-  const rpcUrl = resolveEnvValue(rpcKey, network === "worldchain" ? defaultRpcUrl : "");
+  const rpcUrl = resolveEnvValue(rpcKey, network === "base" ? defaultRpcUrl : "");
   if (!rpcUrl) {
     throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
   }
@@ -387,7 +386,6 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
 function normalizeSpokeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "bnb") return "bsc";
-  if (normalized === "eth") return "ethereum";
   if (normalized in SPOKE_NETWORKS) return normalized;
 
   throw new Error(

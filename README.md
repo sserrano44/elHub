@@ -2,11 +2,11 @@ elhub
 
 Official site: `https://elhub.finance`
 
-Multi-chain intent-based DeFi money market with hub-side accounting on Base and spoke execution on other L2s.
+Multi-chain intent-based DeFi money market with hub-side accounting on Ethereum mainnet and spoke execution on Base and BSC.
 
 ## What this repo includes
-- Hub contracts (Base): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
-- Spoke contracts (other L2s): portal for supply/repay initiation and borrow/withdraw fills.
+- Hub contracts (Ethereum mainnet): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
+- Spoke contracts (Base/BSC): portal for supply/repay initiation and borrow/withdraw fills.
 - ZK plumbing: verifier interface + dev mode + circuit scaffold.
 - Services:
   - `services/indexer`: canonical lifecycle/status API.
@@ -50,8 +50,8 @@ pnpm dev
 ```
 
 `pnpm dev` runs:
-1. Base-local anvil (`:8545`, chain id `8453`)
-2. Worldchain-local anvil (`:9545`, chain id `480`)
+1. Ethereum-mainnet-local anvil (`:8545`, chain id `1`)
+2. Spoke-local anvil (`:9545`, chain id `8453` for `SPOKE_NETWORK=base`, `56` for `SPOKE_NETWORK=bsc`)
 3. Hub + spoke deployments (`contracts/script/deploy-local.sh`)
 4. ABI generation (`packages/abis`)
 5. `indexer`, `prover`, `relayer`, and `web` apps
@@ -64,7 +64,7 @@ pnpm dev
 
 ## Contracts
 
-### Hub (Base)
+### Hub (Ethereum mainnet)
 - `HubMoneyMarket`: share-based supply/debt accounting, interest accrual, settlement hooks, liquidation skeleton.
 - `HubRiskManager`: HF math + lock/borrow/withdraw checks + caps.
 - `ChainlinkPriceOracle`: Chainlink `AggregatorV3` adapter with heartbeat/staleness checks, bounds, and decimal normalization to `e8`.
@@ -76,7 +76,7 @@ pnpm dev
 - `CanonicalBridgeReceiverAdapter`: hub-side bridge attestation entrypoint with `ATTESTER_ROLE`.
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
 
-### Spoke (Worldchain)
+### Spoke (Base / BSC)
 - `SpokePortal`: supply/repay initiation (escrow + bridge call) and fill execution for borrow/withdraw.
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `CanonicalBridgeAdapter`: production adapter with allowlisted callers and per-token canonical routes.
@@ -147,33 +147,34 @@ Notes:
   - full lifecycle: borrow -> repay -> withdraw collateral
   - liquidation when ETH price drops below safe collateralization
 
-### Cross-chain fork E2E test (Base + selected spoke, lock/fill/settle)
+### Cross-chain fork E2E test (hub fork + selected spoke, lock/fill/settle)
 
-With Base fork on `:8545` and spoke fork on `:8546`:
+With hub fork on `:8545` and spoke fork on `:8546`:
 
 ```bash
 cd contracts
 RUN_FORK_TESTS=1 \
+# BASE_FORK_URL is the legacy env key used by this Forge test for hub fork RPC.
 BASE_FORK_URL=http://127.0.0.1:8545 \
-SPOKE_NETWORK=worldchain \
-SPOKE_WORLDCHAIN_RPC_URL=http://127.0.0.1:8546 \
+SPOKE_NETWORK=bsc \
+SPOKE_BSC_RPC_URL=http://127.0.0.1:8546 \
 forge test --match-contract ForkCrossChainE2ETest -vv
 ```
 
 This test executes:
-1. supply ETH collateral on Base hub market
-2. sign + lock borrow intent on Base
+1. supply ETH collateral on hub market
+2. sign + lock borrow intent on hub
 3. fill borrow on selected spoke
-4. settle batch on Base and verify debt + relayer reimbursement + lock consumption
+4. settle batch on hub and verify debt + relayer reimbursement + lock consumption
 
-### Fork E2E (Base + selected spoke forks)
+### Fork E2E (Ethereum hub + selected spoke forks)
 
-If you run Base fork on `:8545` and spoke fork on `:8546`, execute:
+If you run a hub fork on `:8545` and spoke fork on `:8546`, execute:
 
 ```bash
 HUB_RPC_URL=http://127.0.0.1:8545 \
-SPOKE_NETWORK=worldchain \
-SPOKE_WORLDCHAIN_RPC_URL=http://127.0.0.1:8546 \
+SPOKE_NETWORK=base \
+SPOKE_BASE_RPC_URL=http://127.0.0.1:8546 \
 pnpm test:e2e:fork
 ```
 
@@ -189,7 +190,7 @@ Notes:
 2. RPC resolution order:
    1. explicit process env (`HUB_RPC_URL`, `SPOKE_NETWORK`, `SPOKE_<NETWORK>_RPC_URL`)
    2. `.env` with the same keys
-   3. worldchain local fallback (`http://127.0.0.1:8546`) only when `SPOKE_NETWORK=worldchain`
+   3. base local fallback (`http://127.0.0.1:8546`) only when `SPOKE_NETWORK=base`
 3. This allows switching spokes by changing `SPOKE_NETWORK` plus one spoke RPC variable.
 4. When RPCs are Tenderly, `scripts/e2e-fork.mjs` can fund deployer/relayer/bridge/prover with `tenderly_setBalance` (Admin RPC).
 5. Optional Tenderly Admin RPC envs:
@@ -211,8 +212,8 @@ This flow enforces:
 
 ```bash
 # Option A: Local anvil forks
-anvil --fork-url "$BASE_RPC_URL" --port 8545
-anvil --fork-url "$SPOKE_WORLDCHAIN_RPC_URL" --port 8546
+anvil --fork-url "$HUB_RPC_URL" --port 8545
+anvil --fork-url "$SPOKE_BASE_RPC_URL" --port 8546
 ```
 
 #### 2) Build circuit artifacts

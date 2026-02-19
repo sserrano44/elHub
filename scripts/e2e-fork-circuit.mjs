@@ -11,8 +11,7 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
 const SPOKE_NETWORKS = {
-  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 },
-  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
+  base: { envPrefix: "BASE", label: "Base", defaultChainId: 8453 },
   bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
 };
 
@@ -28,7 +27,7 @@ const groth16VerifierAddress =
   ?? dotEnv.HUB_GROTH16_VERIFIER_ADDRESS
   ?? "";
 const hubRpcUrl = resolveEnvValue("HUB_RPC_URL", "http://127.0.0.1:8545");
-const hubChainId = resolveEnvValue("HUB_CHAIN_ID", "8453");
+const hubChainId = resolveEnvValue("HUB_CHAIN_ID", "1");
 const spoke = resolveSpokeConfig("http://127.0.0.1:8546");
 const spokeRpcUrl = spoke.rpcUrl;
 const spokeChainId = String(spoke.chainId);
@@ -122,7 +121,7 @@ function resolveEnvValue(key, fallback = "") {
 }
 
 function resolveSpokeConfig(defaultRpcUrl = "") {
-  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "worldchain"));
+  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "base"));
   const config = SPOKE_NETWORKS[network];
   const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
   const rpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
@@ -132,7 +131,7 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
     throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
   }
 
-  const rpcUrl = resolveEnvValue(rpcKey, network === "worldchain" ? defaultRpcUrl : "");
+  const rpcUrl = resolveEnvValue(rpcKey, network === "base" ? defaultRpcUrl : "");
   if (!rpcUrl) {
     throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
   }
@@ -149,7 +148,6 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
 function normalizeSpokeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "bnb") return "bsc";
-  if (normalized === "eth") return "ethereum";
   if (normalized in SPOKE_NETWORKS) return normalized;
 
   throw new Error(

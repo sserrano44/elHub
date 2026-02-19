@@ -24,14 +24,13 @@ const contractsDir = path.join(rootDir, "contracts");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
 
 const SPOKE_NETWORKS = {
-  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 },
-  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
+  base: { envPrefix: "BASE", label: "Base", defaultChainId: 8453 },
   bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
 };
 
 const HUB_RPC_URL = resolveEnvValue("HUB_RPC_URL", "http://127.0.0.1:8545");
 const HUB_ADMIN_RPC_URL = resolveEnvValue("HUB_ADMIN_RPC_URL", HUB_RPC_URL);
-const HUB_CHAIN_ID = Number(resolveEnvValue("HUB_CHAIN_ID", "8453"));
+const HUB_CHAIN_ID = Number(resolveEnvValue("HUB_CHAIN_ID", "1"));
 const SPOKE = resolveSpokeConfig("http://127.0.0.1:8546");
 const SPOKE_NETWORK = SPOKE.network;
 const SPOKE_LABEL = SPOKE.label;
@@ -183,7 +182,7 @@ async function main() {
   const userAccount = privateKeyToAccount(USER_PRIVATE_KEY);
   const hubChain = defineChain({
     id: HUB_CHAIN_ID,
-    name: "Base Fork",
+    name: "Ethereum Fork",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [HUB_RPC_URL] } }
   });
@@ -794,7 +793,7 @@ function resolveEnvValue(key, fallback = "") {
 }
 
 function resolveSpokeConfig(defaultRpcUrl = "") {
-  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "worldchain"));
+  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "base"));
   const config = SPOKE_NETWORKS[network];
   const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
   const rpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
@@ -805,7 +804,7 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
     throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
   }
 
-  const rpcUrl = resolveEnvValue(rpcKey, network === "worldchain" ? defaultRpcUrl : "");
+  const rpcUrl = resolveEnvValue(rpcKey, network === "base" ? defaultRpcUrl : "");
   if (!rpcUrl) {
     throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
   }
@@ -825,7 +824,6 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
 function normalizeSpokeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "bnb") return "bsc";
-  if (normalized === "eth") return "ethereum";
   if (normalized in SPOKE_NETWORKS) return normalized;
 
   throw new Error(

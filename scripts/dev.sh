@@ -14,20 +14,19 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   pnpm install
 fi
 
-HUB_CHAIN_ID="${HUB_CHAIN_ID:-8453}"
+HUB_CHAIN_ID="${HUB_CHAIN_ID:-1}"
 HUB_RPC_PORT="${HUB_RPC_PORT:-8545}"
 SPOKE_RPC_PORT="${SPOKE_RPC_PORT:-9545}"
-SPOKE_NETWORK="${SPOKE_NETWORK:-worldchain}"
+SPOKE_NETWORK="${SPOKE_NETWORK:-base}"
 
 normalize_spoke_network() {
   local value
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
-    worldchain) echo "worldchain" ;;
-    ethereum|eth) echo "ethereum" ;;
+    base) echo "base" ;;
     bsc|bnb) echo "bsc" ;;
     *)
-      echo "Unsupported SPOKE_NETWORK=$1 (expected: worldchain, ethereum, bsc)" >&2
+      echo "Unsupported SPOKE_NETWORK=$1 (expected: base, bsc)" >&2
       exit 1
       ;;
   esac
@@ -35,15 +34,10 @@ normalize_spoke_network() {
 
 SPOKE_NETWORK="$(normalize_spoke_network "$SPOKE_NETWORK")"
 case "$SPOKE_NETWORK" in
-  worldchain)
-    SPOKE_ENV_PREFIX="WORLDCHAIN"
-    SPOKE_LABEL="Worldchain"
-    SPOKE_DEFAULT_CHAIN_ID=480
-    ;;
-  ethereum)
-    SPOKE_ENV_PREFIX="ETHEREUM"
-    SPOKE_LABEL="Ethereum"
-    SPOKE_DEFAULT_CHAIN_ID=1
+  base)
+    SPOKE_ENV_PREFIX="BASE"
+    SPOKE_LABEL="Base"
+    SPOKE_DEFAULT_CHAIN_ID=8453
     ;;
   bsc)
     SPOKE_ENV_PREFIX="BSC"
@@ -67,8 +61,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting Base-local anvil on :${HUB_RPC_PORT}"
-anvil --port "$HUB_RPC_PORT" --chain-id "$HUB_CHAIN_ID" --block-time 1 >/tmp/elhub-anvil-base.log 2>&1 &
+echo "Starting Ethereum-mainnet-local anvil on :${HUB_RPC_PORT}"
+anvil --port "$HUB_RPC_PORT" --chain-id "$HUB_CHAIN_ID" --block-time 1 >/tmp/elhub-anvil-ethereum.log 2>&1 &
 PIDS+=("$!")
 
 echo "Starting ${SPOKE_LABEL}-local anvil on :${SPOKE_RPC_PORT}"

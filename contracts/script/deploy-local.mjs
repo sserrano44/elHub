@@ -24,14 +24,13 @@ const outDir = path.resolve(contractsDir, "out");
 const deploymentsDir = path.resolve(contractsDir, "deployments");
 
 const SPOKE_NETWORK_DEFAULTS = {
-  worldchain: { label: "Worldchain", chainId: 480, rpcUrl: "http://127.0.0.1:9545" },
-  ethereum: { label: "Ethereum", chainId: 1, rpcUrl: "" },
+  base: { label: "Base", chainId: 8453, rpcUrl: "http://127.0.0.1:9545" },
   bsc: { label: "BSC", chainId: 56, rpcUrl: "" }
 };
 
 const HUB_RPC_URL = process.env.HUB_RPC_URL ?? "http://127.0.0.1:8545";
-const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? 8453);
-const SPOKE_NETWORK = normalizeSpokeNetwork(process.env.SPOKE_NETWORK ?? "worldchain");
+const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? 1);
+const SPOKE_NETWORK = normalizeSpokeNetwork(process.env.SPOKE_NETWORK ?? "base");
 const SPOKE_ENV_PREFIX = SPOKE_NETWORK.toUpperCase();
 const SPOKE_NETWORK_CONFIG = SPOKE_NETWORK_DEFAULTS[SPOKE_NETWORK];
 const SPOKE_CHAIN_ID = Number(process.env[`SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID`] ?? SPOKE_NETWORK_CONFIG.chainId);
@@ -72,7 +71,7 @@ const prover = privateKeyToAccount(PROVER_PRIVATE_KEY);
 
 const hubChain = defineChain({
   id: HUB_CHAIN_ID,
-  name: "Base Local",
+  name: "Ethereum Mainnet Local",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [HUB_RPC_URL] } }
 });
@@ -509,7 +508,6 @@ main().catch((error) => {
 function normalizeSpokeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "bnb") return "bsc";
-  if (normalized === "eth") return "ethereum";
   if (normalized in SPOKE_NETWORK_DEFAULTS) return normalized;
 
   throw new Error(
