@@ -96,14 +96,27 @@ function runSharedStoreContract(name: string, createStore: () => IndexerStore) {
     assert.equal(inserted.status, "initiated");
     assert.deepEqual(inserted.metadata, { step: "initiated" });
 
+    const pendingFill = store.upsertDeposit(
+      makeDeposit({
+        status: "pending_fill",
+        metadata: { relayTx: "0x1234" }
+      })
+    );
+    assert.equal(pendingFill.status, "pending_fill");
+    assert.deepEqual(pendingFill.metadata, { step: "initiated", relayTx: "0x1234" });
+
     const bridged = store.upsertDeposit(
       makeDeposit({
         status: "bridged",
-        metadata: { bridgeTx: "0x1234" }
+        metadata: { bridgeTx: "0x5678" }
       })
     );
     assert.equal(bridged.status, "bridged");
-    assert.deepEqual(bridged.metadata, { step: "initiated", bridgeTx: "0x1234" });
+    assert.deepEqual(bridged.metadata, {
+      step: "initiated",
+      relayTx: "0x1234",
+      bridgeTx: "0x5678"
+    });
 
     const fromGet = store.getDeposit(42);
     assert.ok(fromGet);

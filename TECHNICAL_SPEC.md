@@ -1,7 +1,7 @@
 # elhub Technical Specification
 
 Version: `0.1.0`  
-Last updated: `2026-02-15`
+Last updated: `2026-02-21`
 
 ## 1. Purpose and Scope
 
@@ -169,14 +169,23 @@ Reservation state:
 File: `/Users/sebas/projects/elhub/contracts/src/hub/HubCustody.sol`
 
 Responsibilities:
-1. Register bridged deposits (`BRIDGE_ROLE`).
+1. Register bridged deposits (`CANONICAL_BRIDGE_RECEIVER_ROLE`).
 2. Release matched deposits to market (`SETTLEMENT_ROLE`).
 3. Enforce one-time consume semantics per `depositId`.
 
-Note:
-1. Current production gap: deposit registration still trusts privileged bridge role rather than canonical bridge attestation.
+### 5.6 HubAcrossReceiver
+File: `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossReceiver.sol`
 
-### 5.6 HubSettlement
+Responsibilities:
+1. Accept Across callback only from configured hub `SpokePool`.
+2. Treat callback message as untrusted and store a `pending` fill only.
+3. Track actual `tokenSent` and `amountReceived` from callback params.
+4. Finalize pending fill permissionlessly via `verifyDepositProof`.
+5. Move funds into `HubCustody` and call `registerBridgedDeposit` only after valid proof.
+6. Enforce replay protection via finalization key:
+   1. `sourceChainId + sourceTxHash + sourceLogIndex + depositId + messageHash`.
+
+### 5.7 HubSettlement
 File: `/Users/sebas/projects/elhub/contracts/src/hub/HubSettlement.sol`
 
 Responsibilities:
@@ -195,7 +204,7 @@ Replay protections:
 Batch max:
 1. `MAX_BATCH_ACTIONS = 50`
 
-### 5.7 Verifier
+### 5.8 Verifier
 File: `/Users/sebas/projects/elhub/contracts/src/zk/Verifier.sol`
 
 Modes:
@@ -205,7 +214,7 @@ Modes:
 Public input count:
 1. Configured immutable `PUBLIC_INPUT_COUNT` (current expected value `4`).
 
-### 5.8 Groth16VerifierAdapter
+### 5.9 Groth16VerifierAdapter
 File: `/Users/sebas/projects/elhub/contracts/src/zk/Groth16VerifierAdapter.sol`
 
 Responsibilities:
@@ -214,7 +223,7 @@ Responsibilities:
 3. Validate each public input is `< SNARK_SCALAR_FIELD`.
 4. Delegate to snarkjs-style generated verifier signature.
 
-### 5.9 SpokePortal
+### 5.10 SpokePortal
 File: `/Users/sebas/projects/elhub/contracts/src/spoke/SpokePortal.sol`
 
 Responsibilities:
@@ -228,16 +237,24 @@ Events:
 3. `BorrowFilled`
 4. `WithdrawFilled`
 
-### 5.10 Bridge Adapters
+### 5.11 Bridge Adapters
 Files:
 1. `/Users/sebas/projects/elhub/contracts/src/spoke/CanonicalBridgeAdapter.sol`
-2. `/Users/sebas/projects/elhub/contracts/src/spoke/MockBridgeAdapter.sol`
+2. `/Users/sebas/projects/elhub/contracts/src/spoke/AcrossBridgeAdapter.sol`
+3. `/Users/sebas/projects/elhub/contracts/src/spoke/MockBridgeAdapter.sol`
+4. `/Users/sebas/projects/elhub/contracts/src/mocks/MockAcrossSpokePool.sol`
 
 Canonical adapter:
 1. Per-token route config.
 2. Caller allowlist.
 3. Pause support.
 4. Bridges via configured canonical bridge contract.
+
+Across adapter:
+1. Per-token Across route config (`spokePool`, `hubToken`, relayer/deadline fields).
+2. Caller allowlist.
+3. Emits Across V3 `depositV3` with encoded deposit metadata.
+4. Preserves `SpokePortal` bridge adapter interface.
 
 Mock adapter:
 1. Local/dev escrow sink + event emission.
@@ -247,11 +264,17 @@ Mock adapter:
 
 ### 6.1 Supply/Repay (Worldchain -> Base)
 1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
-2. Spoke portal escrows funds and calls `bridgeToHub`.
-3. Relayer observes spoke event and records deposit in indexer.
-4. Hub custody deposit is registered (current path uses bridge role simulation).
-5. Prover enqueues action.
-6. Settlement batch verifies and applies supply/repay accounting.
+2. Spoke portal escrows funds and calls Across transport (`AcrossBridgeAdapter -> depositV3`).
+3. Relayer observes source Across deposit event and records `initiated`.
+4. Hub `MockAcrossSpokePool` relay calls `HubAcrossReceiver.handleV3AcrossMessage`:
+   1. receiver records `pending_fill` only (no custody credit).
+5. Relayer (or any caller) submits proof to `finalizePendingDeposit`.
+6. On valid proof:
+   1. receiver transfers bridged token to `HubCustody`.
+   2. receiver calls `HubCustody.registerBridgedDeposit`.
+   3. indexer status updates to `bridged`.
+7. Prover enqueues action.
+8. Settlement batch verifies and applies supply/repay accounting.
 
 ### 6.2 Borrow/Withdraw (Base accounting -> Worldchain payout)
 1. User signs EIP-712 intent.
@@ -272,8 +295,9 @@ Mock adapter:
 
 ### 6.4 Indexer deposit statuses
 1. `initiated`
-2. `bridged`
-3. `settled`
+2. `pending_fill`
+3. `bridged`
+4. `settled`
 
 ## 7. Proof System Specification
 
@@ -334,16 +358,14 @@ Public endpoints:
 3. `POST /intent/submit`
 
 Behavior:
-1. Watches spoke `SupplyInitiated` and `RepayInitiated` logs.
+1. Watches spoke Across `V3FundsDeposited` logs.
 2. Updates indexer via signed internal calls.
-3. For borrow/withdraw submit:
+3. Triggers hub-side relay callback and permissionless proof finalization for inbound deposits.
+4. For borrow/withdraw submit:
    1. lock on hub
    2. fill on spoke
    3. record fill evidence on hub
    4. enqueue prover action
-
-Current production gap:
-1. Deposit path still includes mock mint/register simulation in relayer.
 
 ### 8.2 Indexer service
 File: `/Users/sebas/projects/elhub/services/indexer/src/server.ts`
@@ -428,7 +450,8 @@ Coverage includes:
 4. Liquidation behavior.
 5. Base fork supply/borrow lifecycle.
 6. Cross-chain fork lock/fill/settle path.
-7. Production verifier path rejecting tampered proofs.
+7. Across receiver pending-fill/proof-finalization invariants.
+8. Production verifier path rejecting tampered proofs.
 
 ### 10.2 Scripted fork E2E (dev proof)
 Script:
@@ -442,7 +465,19 @@ RPC resolution order:
 2. `.env` with the same keys
 3. localhost defaults (`8545/8546`) for local worldchain flow
 
-### 10.3 Scripted fork E2E (circuit mode)
+### 10.3 Base -> Mainnet-Hub supply-only E2E
+Script:
+1. `/Users/sebas/projects/elhub/scripts/e2e-base-mainnet-supply.mjs`
+
+Command:
+1. `pnpm test:e2e:base-mainnet-supply`
+
+Checks:
+1. deposit reaches `pending_fill`
+2. deposit transitions to `bridged` only after proof finalization
+3. settlement credits user supply on hub
+
+### 10.4 Scripted fork E2E (circuit mode)
 Script:
 1. `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit-one-shot.mjs`
 
@@ -459,7 +494,7 @@ Direct runner (without one-shot prepare):
 1. script: `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit.mjs`
 2. command: `pnpm test:e2e:fork:circuit:exec`
 
-### 10.4 Circuit E2E prepare helper
+### 10.5 Circuit E2E prepare helper
 Script:
 1. `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit-prepare.mjs`
 
@@ -484,7 +519,7 @@ Enforced in current implementation:
 7. Pause controls on lock manager, settlement, market, and spoke portal.
 
 Known security gaps (tracked by readiness plan):
-1. Canonical bridge attestation path for deposits (P0-2).
+1. Deposit proof verifier trust/quality (production must use real light-client/ZK verifier, not stub).
 2. Production DB/idempotent outbox model for services (P0-4).
 3. Full validity constraints in ZK circuit (remaining P0-1 work).
 4. Governance hardening, oracle hardening, and audit closure (P1/P2).
@@ -496,6 +531,6 @@ The remaining blockers are:
    1. prove deposit attestation validity
    2. prove lock/fill matching validity
    3. prove amount/fee constraint validity
-2. Complete P0-2 canonical bridge attestation path and remove simulation mint path.
+2. Ship production deposit proof verifier backend (light-client/ZK) and retire stub verifier.
 3. Complete P0-4 durable persistence migration from JSON to transactional DB + outbox.
 4. Execute P1 and P2 workstreams as defined in `/Users/sebas/projects/elhub/PRODUCTION_READINESS_PLAN.md`.

@@ -73,22 +73,26 @@ pnpm dev
 - `HubSettlement`: batched settlement with verifier, replay protection, lock/fill/deposit checks.
 - `Verifier`: `DEV_MODE` dummy proof support + real verifier slot.
 - `HubCustody`: bridged funds intake + controlled release to market.
-- `CanonicalBridgeReceiverAdapter`: hub-side bridge attestation entrypoint with `ATTESTER_ROLE`.
+- `HubAcrossReceiver`: Across callback receiver that records pending fills and finalizes deposits only after proof verification.
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
 
 ### Spoke (Base / BSC)
 - `SpokePortal`: supply/repay initiation (escrow + bridge call) and fill execution for borrow/withdraw.
 - `MockBridgeAdapter`: local bridging simulation event sink.
+- `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
+- `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and hub relay simulation.
 - `CanonicalBridgeAdapter`: production adapter with allowlisted callers and per-token canonical routes.
 
 ## End-to-end lifecycle
 
 ### Supply / Repay
 1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
-2. Relayer watches spoke events.
-3. Canonical bridge attestation is forwarded through `CanonicalBridgeReceiverAdapter` to `HubCustody.registerBridgedDeposit`.
-4. Prover batches deposit actions and submits settlement proof.
-5. Hub settlement credits supply or repays debt.
+2. Across transport emits source deposit event on spoke.
+3. Hub `HubAcrossReceiver` callback records a `pending_fill` (untrusted message, no custody credit yet).
+4. Anyone can call `HubAcrossReceiver.finalizePendingDeposit` with a valid deposit proof.
+5. On proof success, receiver moves bridged funds into `HubCustody` and registers the bridged deposit exactly once.
+6. Prover batches deposit actions and submits settlement proof.
+7. Hub settlement credits supply or repays debt.
 
 ### Borrow / Withdraw
 1. User signs EIP-712 intent in UI.
@@ -112,6 +116,7 @@ Tests cover:
 - Chainlink oracle adapter checks (staleness, non-positive answers, decimal normalization)
 - Risk manager oracle bound enforcement
 - Supply+borrow lock/fill/settle happy path
+- Across pending-fill + proof-gated bridge crediting invariants
 - Replay protections (batch, intent, fill)
 - Failure paths (missing lock/fill, expired intent)
 - Settlement atomicity rollback on mid-batch failure
@@ -200,6 +205,22 @@ Notes:
    1. `E2E_USE_TENDERLY_FUNDING` (default `1`)
    2. `E2E_MIN_DEPLOYER_GAS_ETH` (default `2`)
    3. `E2E_MIN_OPERATOR_GAS_ETH` (default `0.05`)
+
+### Base -> Mainnet-Hub supply-only E2E
+
+To run only the inbound supply path (Base spoke -> mainnet hub semantics, `HUB_CHAIN_ID=1`):
+
+```bash
+HUB_RPC_URL=http://127.0.0.1:8545 \
+SPOKE_NETWORK=base \
+SPOKE_BASE_RPC_URL=http://127.0.0.1:8546 \
+pnpm test:e2e:base-mainnet-supply
+```
+
+This wrapper runs `scripts/e2e-fork.mjs` with `E2E_SUPPLY_ONLY=1` and asserts:
+1. deposit reaches `pending_fill`
+2. deposit is proof-finalized to `bridged`
+3. settlement credits supply on hub
 
 ### Circuit-mode fork E2E (real Groth16 path, no dev verifier)
 
@@ -329,9 +350,14 @@ After local deploy:
   - `setAllowedCaller(<SpokePortal>, true)`
   - `setRoute(localToken, canonicalBridge, remoteToken, minGasLimit, true)` per token
   - `SpokePortal.setBridgeAdapter(<CanonicalBridgeAdapter>)`
-- Configure hub-side bridge receiver:
-  - grant `ATTESTER_ROLE` on `CanonicalBridgeReceiverAdapter` to trusted attesters
-  - grant `CANONICAL_BRIDGE_RECEIVER_ROLE` on `HubCustody` to `CanonicalBridgeReceiverAdapter`
+- Configure `AcrossBridgeAdapter` (recommended inbound transport path):
+  - `setAllowedCaller(<SpokePortal>, true)`
+  - `setRoute(localToken, acrossSpokePool, hubToken, exclusiveRelayer, fillDeadlineBuffer, true)` per token
+  - `SpokePortal.setBridgeAdapter(<AcrossBridgeAdapter>)`
+- Configure hub-side Across receiver:
+  - deploy `HubAcrossReceiver(admin, custody, depositProofVerifier, hubSpokePool)`
+  - grant `CANONICAL_BRIDGE_RECEIVER_ROLE` on `HubCustody` to `HubAcrossReceiver`
+  - do not grant attester/operator EOAs any custody bridge registration role
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
   - deploy generated verifier (from `snarkjs zkey export solidityverifier`)
   - deploy `Groth16VerifierAdapter(owner, generatedVerifier)`
@@ -341,12 +367,13 @@ After local deploy:
 ## Threat model (MVP)
 - Hub is source of truth for all accounting and risk checks.
 - No fast credit for collateral: supply/repay only apply post-settlement.
+- No operator/attester direct bridge credit path in runtime: inbound deposits require `HubAcrossReceiver` proof finalization before `HubCustody` registration.
 - Borrow/withdraw requires hub-side lock and reservation before spoke fill.
 - Settlement batch replay is blocked by `batchId` replay protection.
 - Intent finalization replay blocked via lock consumption + settled intent tracking.
 - Spoke double-fills blocked by `filledIntent` mapping.
 - `DEV_MODE` verifier does not provide production cryptographic guarantees.
-- Bridge integration is mocked locally; production must use canonical bridge adapters and real event commitments.
+- Local Across flow uses mocked SpokePools and a stub deposit verifier; production must use real Across contracts and a real light-client/ZK deposit proof verifier.
 
 ## Production readiness
 - Detailed execution plan: `PRODUCTION_READINESS_PLAN.md`

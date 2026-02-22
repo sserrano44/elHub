@@ -252,15 +252,19 @@ async function main() {
     custody,
     lockManager
   ]);
-  const canonicalBridgeReceiver = await deploy(hubWallet, hubPublic, "CanonicalBridgeReceiverAdapter", [
+  const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifierStub", []);
+  const hubAcrossSpokePool = await deploy(hubWallet, hubPublic, "MockAcrossSpokePool", []);
+  const hubAcrossReceiver = await deploy(hubWallet, hubPublic, "HubAcrossReceiver", [
     deployer.address,
-    custody
+    custody,
+    depositProofVerifier,
+    hubAcrossSpokePool
   ]);
 
   console.log("Deploying spoke protocol...");
   const spokePortal = await deploy(spokeWallet, spokePublic, "SpokePortal", [deployer.address, BigInt(HUB_CHAIN_ID)]);
-  const spokeCanonicalBridge = await deploy(spokeWallet, spokePublic, "MockCanonicalTokenBridge", []);
-  const spokeBridgeAdapter = await deploy(spokeWallet, spokePublic, "CanonicalBridgeAdapter", [deployer.address]);
+  const spokeAcrossSpokePool = await deploy(spokeWallet, spokePublic, "MockAcrossSpokePool", []);
+  const spokeBridgeAdapter = await deploy(spokeWallet, spokePublic, "AcrossBridgeAdapter", [deployer.address, BigInt(HUB_CHAIN_ID)]);
 
   const tokenRegistryAbi = loadArtifact("TokenRegistry").abi;
   const riskAbi = loadArtifact("HubRiskManager").abi;
@@ -268,14 +272,13 @@ async function main() {
   const inboxAbi = loadArtifact("HubIntentInbox").abi;
   const lockAbi = loadArtifact("HubLockManager").abi;
   const custodyAbi = loadArtifact("HubCustody").abi;
-  const canonicalReceiverAbi = loadArtifact("CanonicalBridgeReceiverAdapter").abi;
   const settlementAbi = loadArtifact("HubSettlement").abi;
   const portalAbi = loadArtifact("SpokePortal").abi;
-  const canonicalBridgeAdapterAbi = loadArtifact("CanonicalBridgeAdapter").abi;
+  const acrossBridgeAdapterAbi = loadArtifact("AcrossBridgeAdapter").abi;
   const erc20Abi = loadArtifact("MockERC20").abi;
   const oracleAbi = loadArtifact("MockOracle").abi;
 
-  const bridgeAdapterId = keccak256(stringToHex("canonical-bridge"));
+  const bridgeAdapterId = keccak256(stringToHex("across-v3"));
   const riskBase = [7500n, 8000n, 10500n];
 
   const tokenRows = [
@@ -349,37 +352,30 @@ async function main() {
   const CANONICAL_BRIDGE_RECEIVER_ROLE = keccak256(stringToHex("CANONICAL_BRIDGE_RECEIVER_ROLE"));
   const SETTLEMENT_ROLE = keccak256(stringToHex("SETTLEMENT_ROLE"));
   const RELAYER_ROLE = keccak256(stringToHex("RELAYER_ROLE"));
-  const ATTESTER_ROLE = keccak256(stringToHex("ATTESTER_ROLE"));
 
   await write(hubWallet, hubPublic, {
     address: custody,
     abi: custodyAbi,
     functionName: "grantRole",
-    args: [CANONICAL_BRIDGE_RECEIVER_ROLE, canonicalBridgeReceiver]
+    args: [CANONICAL_BRIDGE_RECEIVER_ROLE, hubAcrossReceiver]
   });
   await write(hubWallet, hubPublic, { address: custody, abi: custodyAbi, functionName: "grantRole", args: [SETTLEMENT_ROLE, settlement] });
   await write(hubWallet, hubPublic, { address: settlement, abi: settlementAbi, functionName: "grantRole", args: [RELAYER_ROLE, relayer.address] });
-  await write(hubWallet, hubPublic, {
-    address: canonicalBridgeReceiver,
-    abi: canonicalReceiverAbi,
-    functionName: "grantRole",
-    args: [ATTESTER_ROLE, relayer.address]
-  });
 
   await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setBridgeAdapter", args: [spokeBridgeAdapter] });
-  await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setHubRecipient", args: [custody] });
+  await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setHubRecipient", args: [hubAcrossReceiver] });
   await write(spokeWallet, spokePublic, {
     address: spokeBridgeAdapter,
-    abi: canonicalBridgeAdapterAbi,
+    abi: acrossBridgeAdapterAbi,
     functionName: "setAllowedCaller",
     args: [spokePortal, true]
   });
   for (const row of tokenRows) {
     await write(spokeWallet, spokePublic, {
       address: spokeBridgeAdapter,
-      abi: canonicalBridgeAdapterAbi,
+      abi: acrossBridgeAdapterAbi,
       functionName: "setRoute",
-      args: [row.spoke, spokeCanonicalBridge, row.hub, 300_000, true]
+      args: [row.spoke, spokeAcrossSpokePool, row.hub, ZERO_ADDRESS, 300_000, true]
     });
   }
 
@@ -396,6 +392,12 @@ async function main() {
       abi: erc20Abi,
       functionName: "mint",
       args: [custody, parseUnits("1000000", row.decimals)]
+    });
+    await write(hubWallet, hubPublic, {
+      address: row.hub,
+      abi: erc20Abi,
+      functionName: "mint",
+      args: [hubAcrossSpokePool, parseUnits("1000000", row.decimals)]
     });
 
     await write(spokeWallet, spokePublic, {
@@ -417,7 +419,9 @@ async function main() {
       intentInbox,
       lockManager,
       custody,
-      canonicalBridgeReceiver,
+      hubAcrossReceiver,
+      hubAcrossSpokePool,
+      depositProofVerifier,
       verifierDevMode: HUB_VERIFIER_DEV_MODE,
       groth16Verifier,
       groth16VerifierAdapter,
@@ -429,7 +433,7 @@ async function main() {
       chainId: SPOKE_CHAIN_ID,
       portal: spokePortal,
       bridgeAdapter: spokeBridgeAdapter,
-      canonicalBridge: spokeCanonicalBridge
+      acrossSpokePool: spokeAcrossSpokePool
     },
     tokens: {
       WETH: { hub: hubWeth, spoke: spokeWeth, decimals: 18 },
@@ -462,9 +466,11 @@ SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID=${SPOKE_CHAIN_ID}
 HUB_LOCK_MANAGER_ADDRESS=${lockManager}
 HUB_SETTLEMENT_ADDRESS=${settlement}
 HUB_CUSTODY_ADDRESS=${custody}
-HUB_CANONICAL_BRIDGE_RECEIVER_ADDRESS=${canonicalBridgeReceiver}
+HUB_ACROSS_RECEIVER_ADDRESS=${hubAcrossReceiver}
+HUB_ACROSS_SPOKE_POOL_ADDRESS=${hubAcrossSpokePool}
+HUB_DEPOSIT_PROOF_VERIFIER_ADDRESS=${depositProofVerifier}
 SPOKE_PORTAL_ADDRESS=${spokePortal}
-SPOKE_CANONICAL_BRIDGE_ADDRESS=${spokeCanonicalBridge}
+SPOKE_ACROSS_SPOKE_POOL_ADDRESS=${spokeAcrossSpokePool}
 
 RELAYER_PRIVATE_KEY=${RELAYER_PRIVATE_KEY}
 BRIDGE_PRIVATE_KEY=${BRIDGE_PRIVATE_KEY}

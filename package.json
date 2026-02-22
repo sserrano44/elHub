@@ -9,6 +9,7 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:e2e:fork": "node ./scripts/e2e-fork.mjs",
+    "test:e2e:base-mainnet-supply": "node ./scripts/e2e-base-mainnet-supply.mjs",
     "test:e2e:fork:circuit": "node ./scripts/e2e-fork-circuit-one-shot.mjs",
     "test:e2e:fork:circuit:exec": "node ./scripts/e2e-fork-circuit.mjs",
     "test:e2e:fork:circuit:prepare": "node ./scripts/e2e-fork-circuit-prepare.mjs",

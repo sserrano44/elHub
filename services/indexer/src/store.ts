@@ -9,7 +9,7 @@ export type DepositState = {
   intentType: number;
   token: `0x${string}`;
   amount: string;
-  status: "initiated" | "bridged" | "settled";
+  status: "initiated" | "pending_fill" | "bridged" | "settled";
   metadata?: Record<string, unknown>;
   updatedAt: string;
 };

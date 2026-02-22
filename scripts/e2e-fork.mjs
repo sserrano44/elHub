@@ -50,6 +50,7 @@ const INDEXER_PORT = Number(process.env.E2E_INDEXER_PORT ?? "4030");
 const RELAYER_PORT = Number(process.env.E2E_RELAYER_PORT ?? "4040");
 const PROVER_PORT = Number(process.env.E2E_PROVER_PORT ?? "4050");
 const E2E_PROVER_MODE = process.env.E2E_PROVER_MODE ?? process.env.PROVER_MODE ?? "dev";
+const E2E_SUPPLY_ONLY = (process.env.E2E_SUPPLY_ONLY ?? "0") !== "0";
 const PROVER_MIN_NATIVE_ETH = process.env.PROVER_MIN_NATIVE_ETH ?? "0.05";
 const INDEXER_API_URL = `http://127.0.0.1:${INDEXER_PORT}`;
 const RELAYER_API_URL = `http://127.0.0.1:${RELAYER_PORT}`;
@@ -243,9 +244,20 @@ async function main() {
       const res = await fetch(`${INDEXER_API_URL}/deposits/${depositId}`);
       if (!res.ok) return false;
       const payload = await res.json();
+      return payload.status === "pending_fill" || payload.status === "bridged" || payload.status === "settled";
+    },
+    "deposit pending fill",
+    120_000
+  );
+
+  await waitUntil(
+    async () => {
+      const res = await fetch(`${INDEXER_API_URL}/deposits/${depositId}`);
+      if (!res.ok) return false;
+      const payload = await res.json();
       return payload.status === "bridged" || payload.status === "settled";
     },
-    "deposit bridging",
+    "deposit proof finalization",
     120_000
   );
 
@@ -270,6 +282,15 @@ async function main() {
   });
   if (userSupply <= 0n) {
     throw new Error("expected non-zero hub supply after settlement");
+  }
+
+  if (E2E_SUPPLY_ONLY) {
+    console.log("[e2e] ==================================================");
+    console.log("[e2e] PASS: base->hub supply lifecycle settled");
+    console.log("[e2e] checks: pending_fill observed, bridged observed, settlement credited on hub");
+    console.log("[e2e] ==================================================");
+    await stopAll();
+    return;
   }
 
   console.log("[e2e] borrow flow: quote + sign intent + relayer submit");

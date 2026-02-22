@@ -81,9 +81,16 @@ const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID ?? "480");
 const lockManagerAddress = process.env.HUB_LOCK_MANAGER_ADDRESS as Address;
 const settlementAddress = process.env.HUB_SETTLEMENT_ADDRESS as Address;
 const custodyAddress = process.env.HUB_CUSTODY_ADDRESS as Address;
-const canonicalReceiverAddress = process.env.HUB_CANONICAL_BRIDGE_RECEIVER_ADDRESS as Address;
+const acrossReceiverAddress = (
+  process.env.HUB_ACROSS_RECEIVER_ADDRESS
+  ?? process.env.HUB_CANONICAL_BRIDGE_RECEIVER_ADDRESS
+) as Address;
+const hubAcrossSpokePoolAddress = process.env.HUB_ACROSS_SPOKE_POOL_ADDRESS as Address;
 const portalAddress = process.env.SPOKE_PORTAL_ADDRESS as Address;
-const spokeCanonicalBridgeAddress = process.env.SPOKE_CANONICAL_BRIDGE_ADDRESS as Address;
+const spokeAcrossSpokePoolAddress = (
+  process.env.SPOKE_ACROSS_SPOKE_POOL_ADDRESS
+  ?? process.env.SPOKE_CANONICAL_BRIDGE_ADDRESS
+) as Address;
 
 const relayerKey = process.env.RELAYER_PRIVATE_KEY as Hex;
 
@@ -108,9 +115,10 @@ if (
   !lockManagerAddress
   || !settlementAddress
   || !custodyAddress
-  || !canonicalReceiverAddress
+  || !acrossReceiverAddress
+  || !hubAcrossSpokePoolAddress
   || !portalAddress
-  || !spokeCanonicalBridgeAddress
+  || !spokeAcrossSpokePoolAddress
   || !relayerKey
 ) {
   throw new Error("Missing required relayer env vars for deployed addresses/private key");
@@ -142,11 +150,15 @@ const spokePublic = createPublicClient({ chain: spokeChain, transport: http(spok
 const hubWallet = createWalletClient({ account: relayerAccount, chain: hubChain, transport: http(hubRpc) });
 const spokeWallet = createWalletClient({ account: relayerAccount, chain: spokeChain, transport: http(spokeRpc) });
 
-const canonicalBridgeReceiverAbi = parseAbi([
-  "function forwardBridgedDeposit(uint256 depositId,uint8 intentType,address user,address hubAsset,uint256 amount,uint256 originChainId,bytes32 originTxHash,uint256 originLogIndex)"
+const acrossReceiverAbi = parseAbi([
+  "function pendingIdFor(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address hubAsset,uint256 amount,bytes32 messageHash) view returns (bytes32)",
+  "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
-const spokeBridgeCalledEvent = parseAbiItem(
-  "event BridgeCalled(address indexed localToken, address indexed remoteToken, address indexed recipient, uint256 amount, uint32 minGasLimit, bytes extraData, address caller)"
+const hubAcrossSpokePoolAbi = parseAbi([
+  "function relayV3Deposit(uint256 originChainId,bytes32 originTxHash,uint256 originLogIndex,address outputToken,uint256 outputAmount,address recipient,bytes message)"
+]);
+const spokeV3FundsDepositedEvent = parseAbiItem(
+  "event V3FundsDeposited(uint256 indexed depositId, address indexed depositor, address indexed recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes message, address caller)"
 );
 const hubBridgedDepositRegisteredEvent = parseAbiItem(
   "event BridgedDepositRegistered(uint256 indexed depositId, uint8 indexed intentType, address indexed user, address hubAsset, uint256 amount, uint256 originChainId, bytes32 originTxHash, uint256 originLogIndex, bytes32 attestationKey)"
@@ -183,8 +195,9 @@ app.get("/health", (_req, res) => {
     hubRpc,
     spokeRpc,
     hubChainId: hubChainId.toString(),
-    canonicalReceiverAddress,
-    spokeCanonicalBridgeAddress,
+    acrossReceiverAddress,
+    hubAcrossSpokePoolAddress,
+    spokeAcrossSpokePoolAddress,
     bridgeFinalityBlocks: relayerSpokeFinalityBlocks.toString(),
     spokeFinalityBlocks: relayerSpokeFinalityBlocks.toString(),
     hubFinalityBlocks: relayerHubFinalityBlocks.toString(),
@@ -327,13 +340,13 @@ app.post("/intent/submit", async (req, res) => {
 app.listen(port, () => {
   console.log(`Relayer API listening on :${port}`);
   setInterval(() => {
-    pollCanonicalBridge().catch((error) => {
+    pollAcrossBridge().catch((error) => {
       console.error("Relayer poll error", error);
     });
   }, 5_000);
 });
 
-async function pollCanonicalBridge() {
+async function pollAcrossBridge() {
   if (isPollingCanonicalBridge) return;
   isPollingCanonicalBridge = true;
   try {
@@ -399,98 +412,87 @@ async function pollSpokeDeposits() {
     finalizedToBlock: finalizedToBlock.toString()
   });
 
-  const canonicalBridgeLogs = await spokePublic.getLogs({
-    address: spokeCanonicalBridgeAddress,
-    event: spokeBridgeCalledEvent,
+  const acrossDepositLogs = await spokePublic.getLogs({
+    address: spokeAcrossSpokePoolAddress,
+    event: spokeV3FundsDepositedEvent,
     fromBlock,
     toBlock: rangeToBlock
   });
 
-  for (const log of canonicalBridgeLogs) {
-    await handleCanonicalBridgeLog(log, finalizedToBlock);
+  for (const log of acrossDepositLogs) {
+    await handleAcrossDepositLog(log, finalizedToBlock);
   }
 
   tracking.lastSpokeBlock = rangeToBlock;
   saveTracking(trackingPath, tracking);
 }
 
-async function handleCanonicalBridgeLog(log: {
+async function handleAcrossDepositLog(log: {
   args: Record<string, unknown>;
   transactionHash?: Hex;
   logIndex?: bigint | number | undefined;
   blockNumber?: bigint | undefined;
 }, finalizedToBlock: bigint) {
-  const localToken = log.args.localToken as Address | undefined;
-  const remoteToken = log.args.remoteToken as Address | undefined;
+  const message = log.args.message as Hex | undefined;
+  const outputToken = log.args.outputToken as Address | undefined;
   const recipient = log.args.recipient as Address | undefined;
-  const amount = log.args.amount as bigint | undefined;
-  const extraData = log.args.extraData as Hex | undefined;
+  const outputAmount = asBigInt(log.args.outputAmount);
+  const destinationChainId = asBigInt(log.args.destinationChainId);
   const originTxHash = log.transactionHash;
   const spokeObservedBlock = log.blockNumber ?? 0n;
   const originLogIndex = typeof log.logIndex === "bigint" ? log.logIndex : BigInt(log.logIndex ?? 0);
 
-  if (!localToken || !remoteToken || !recipient || !extraData || amount === undefined || !originTxHash) {
-    console.warn("Skipping canonical bridge log with missing fields");
+  if (!message || !outputToken || !recipient || outputAmount === undefined || destinationChainId === undefined || !originTxHash) {
+    console.warn("Skipping Across deposit log with missing fields");
     return;
   }
 
-  if (recipient.toLowerCase() !== custodyAddress.toLowerCase()) {
+  if (recipient.toLowerCase() !== acrossReceiverAddress.toLowerCase()) {
     return;
   }
 
-  let decoded:
-    | readonly [bigint, number, Address, Address, bigint, bigint, bigint]
-    | undefined;
-  try {
-    decoded = decodeAbiParameters(
-      [
-        { type: "uint256" }, // depositId
-        { type: "uint8" }, // intentType
-        { type: "address" }, // user
-        { type: "address" }, // spoke token
-        { type: "uint256" }, // amount
-        { type: "uint256" }, // origin chain id
-        { type: "uint256" } // hub chain id
-      ],
-      extraData
-    ) as readonly [bigint, number, Address, Address, bigint, bigint, bigint];
-  } catch (error) {
-    console.warn(`Skipping canonical bridge log with undecodable extraData: ${(error as Error).message}`);
+  const decoded = decodeAcrossDepositMessage(message);
+  if (!decoded) {
+    console.warn("Skipping Across deposit log with undecodable message payload");
     return;
   }
 
-  const [depositId, decodedIntentTypeRaw, user, decodedSpokeToken, decodedAmount, originChainId, decodedHubChainId] =
-    decoded;
-  const intentType = Number(decodedIntentTypeRaw);
+  const {
+    depositId,
+    intentType,
+    user,
+    spokeToken,
+    hubAsset,
+    amount,
+    sourceChainId,
+    destinationChainId: messageDestinationChainId
+  } = decoded;
   if (intentType !== IntentType.SUPPLY && intentType !== IntentType.REPAY) {
     return;
   }
-  if (decodedHubChainId !== hubChainId) {
+  if (messageDestinationChainId !== hubChainId || destinationChainId !== hubChainId) {
     console.warn(
-      `Skipping deposit ${depositId.toString()} due to hub chain mismatch extraData=${decodedHubChainId.toString()} expected=${hubChainId.toString()}`
+      `Skipping deposit ${depositId.toString()} due to destination chain mismatch`
     );
     return;
   }
-  if (decodedSpokeToken.toLowerCase() !== localToken.toLowerCase()) {
-    console.warn(`Skipping deposit ${depositId.toString()} due to spoke token mismatch in extraData`);
+  if (sourceChainId !== spokeChainId) {
+    console.warn(`Skipping deposit ${depositId.toString()} due to source chain mismatch`);
     return;
   }
-  if (decodedAmount !== amount) {
-    console.warn(`Skipping deposit ${depositId.toString()} due to amount mismatch in extraData`);
+  if (amount !== outputAmount) {
+    console.warn(`Skipping deposit ${depositId.toString()} due to amount mismatch in Across message`);
     return;
   }
-
-  const mappedHubToken = spokeToHub[decodedSpokeToken.toLowerCase()];
-  if (mappedHubToken && mappedHubToken.toLowerCase() !== remoteToken.toLowerCase()) {
+  if (hubAsset.toLowerCase() !== outputToken.toLowerCase()) {
     console.warn(
-      `Skipping deposit ${depositId.toString()} due to hub token mismatch map=${mappedHubToken} bridge=${remoteToken}`
+      `Skipping deposit ${depositId.toString()} due to hub token mismatch in Across message`
     );
     return;
   }
-
-  const hubToken = (mappedHubToken ?? remoteToken) as Address;
-  if (!hubToken) {
-    console.warn(`Skipping deposit ${depositId.toString()} due to missing hub token`);
+  const mappedHubToken = spokeToHub[spokeToken.toLowerCase()];
+  if (mappedHubToken && mappedHubToken.toLowerCase() !== hubAsset.toLowerCase()) {
+    console.warn(`Skipping deposit ${depositId.toString()} due to spoke->hub token map mismatch`);
     return;
   }
 
@@ -503,57 +505,105 @@ async function handleCanonicalBridgeLog(log: {
     depositId: Number(depositId),
     user,
     intentType: intentType as IntentType.SUPPLY | IntentType.REPAY,
-    token: hubToken,
+    token: hubAsset,
     amount: amount.toString(),
     status: "initiated",
     metadata: {
-      canonicalBridgeTx: originTxHash,
-      canonicalBridgeLogIndex: originLogIndex.toString(),
-      canonicalBridge: spokeCanonicalBridgeAddress,
-      originChainId: originChainId.toString(),
+      acrossSourceTx: originTxHash,
+      acrossSourceLogIndex: originLogIndex.toString(),
+      acrossSourceSpokePool: spokeAcrossSpokePoolAddress,
+      originChainId: sourceChainId.toString(),
       spokeObservedBlock: spokeObservedBlock.toString(),
       spokeFinalizedToBlock: finalizedToBlock.toString()
     }
   });
 
-  let registerTx: Hex = "0x";
+  let relayTx: Hex | undefined;
   try {
-    registerTx = await hubWallet.writeContract({
-      abi: canonicalBridgeReceiverAbi,
-      address: canonicalReceiverAddress,
-      functionName: "forwardBridgedDeposit",
+    relayTx = await hubWallet.writeContract({
+      abi: hubAcrossSpokePoolAbi,
+      address: hubAcrossSpokePoolAddress,
+      functionName: "relayV3Deposit",
       args: [
-        depositId,
-        intentType,
-        user,
-        hubToken,
-        amount,
-        originChainId,
+        sourceChainId,
         originTxHash,
-        originLogIndex
+        originLogIndex,
+        hubAsset,
+        amount,
+        acrossReceiverAddress,
+        message
       ],
       account: relayerAccount
     });
-    await hubPublic.waitForTransactionReceipt({ hash: registerTx });
+    await hubPublic.waitForTransactionReceipt({ hash: relayTx });
   } catch (error) {
     console.warn(
-      `Canonical bridge attestation registration failed for deposit ${depositId.toString()}: ${(error as Error).message}`
+      `Across relay simulation failed for deposit ${depositId.toString()}: ${(error as Error).message}`
     );
-    return;
   }
+
+  const messageHash = keccak256(message);
+  const pendingId = await hubPublic.readContract({
+    abi: acrossReceiverAbi,
+    address: acrossReceiverAddress,
+    functionName: "pendingIdFor",
+    args: [sourceChainId, depositId, intentType, user, hubAsset, amount, messageHash]
+  }) as Hex;
 
   await postInternal(indexerApi, "/internal/deposits/upsert", {
     depositId: Number(depositId),
     user,
     intentType: intentType as IntentType.SUPPLY | IntentType.REPAY,
-    token: hubToken,
+    token: hubAsset,
     amount: amount.toString(),
-    status: "initiated",
+    status: "pending_fill",
     metadata: {
-      registerTx,
-      canonicalReceiver: canonicalReceiverAddress
+      relayTx,
+      pendingId,
+      acrossReceiver: acrossReceiverAddress,
+      acrossHubSpokePool: hubAcrossSpokePoolAddress
     }
   });
+
+  const witness = {
+    sourceChainId,
+    depositId,
+    intentType,
+    user,
+    hubAsset,
+    amount,
+    sourceTxHash: originTxHash,
+    sourceLogIndex: originLogIndex,
+    messageHash
+  } as const;
+  const proof = encodeDepositProof(witness);
+
+  try {
+    const finalizeTx = await hubWallet.writeContract({
+      abi: acrossReceiverAbi,
+      address: acrossReceiverAddress,
+      functionName: "finalizePendingDeposit",
+      args: [pendingId, proof, witness],
+      account: relayerAccount
+    });
+    await hubPublic.waitForTransactionReceipt({ hash: finalizeTx });
+
+    await postInternal(indexerApi, "/internal/deposits/upsert", {
+      depositId: Number(depositId),
+      user,
+      intentType: intentType as IntentType.SUPPLY | IntentType.REPAY,
+      token: hubAsset,
+      amount: amount.toString(),
+      status: "pending_fill",
+      metadata: {
+        finalizeTx
+      }
+    });
+  } catch (error) {
+    console.warn(
+      `Across pending finalization failed for deposit ${depositId.toString()}: ${(error as Error).message}`
+    );
+  }
 }
 
 async function pollHubDeposits() {
@@ -663,13 +713,13 @@ async function handleHubBridgedDepositLog(log: {
       return;
     }
 
-    const expectedOriginTxHash = metadataString(existing.metadata, "canonicalBridgeTx");
+    const expectedOriginTxHash = metadataString(existing.metadata, "acrossSourceTx");
     if (expectedOriginTxHash && expectedOriginTxHash.toLowerCase() !== originTxHash.toLowerCase()) {
       console.warn(`Skipping bridged deposit ${depositId.toString()} due to origin tx mismatch`);
       return;
     }
 
-    const expectedOriginLogIndex = metadataBigInt(existing.metadata, "canonicalBridgeLogIndex");
+    const expectedOriginLogIndex = metadataBigInt(existing.metadata, "acrossSourceLogIndex");
     if (expectedOriginLogIndex !== undefined && expectedOriginLogIndex !== originLogIndex) {
       console.warn(`Skipping bridged deposit ${depositId.toString()} due to origin log index mismatch`);
       return;
@@ -685,9 +735,9 @@ async function handleHubBridgedDepositLog(log: {
     status: "bridged",
     metadata: {
       hubBridgeReceiveTx: log.transactionHash ?? "0x",
-      canonicalBridgeTx: originTxHash,
-      canonicalBridgeLogIndex: originLogIndex.toString(),
-      canonicalBridge: spokeCanonicalBridgeAddress,
+      acrossSourceTx: originTxHash,
+      acrossSourceLogIndex: originLogIndex.toString(),
+      acrossSourceSpokePool: spokeAcrossSpokePoolAddress,
       originChainId: originChainId.toString(),
       attestationKey,
       hubObservedBlock: hubObservedBlock.toString(),
@@ -910,6 +960,77 @@ function metadataBigInt(metadata: Record<string, unknown> | undefined, key: stri
   }
 }
 
+type AcrossDepositMessage = {
+  depositId: bigint;
+  intentType: number;
+  user: Address;
+  spokeToken: Address;
+  hubAsset: Address;
+  amount: bigint;
+  sourceChainId: bigint;
+  destinationChainId: bigint;
+};
+
+type DepositWitness = {
+  sourceChainId: bigint;
+  depositId: bigint;
+  intentType: number;
+  user: Address;
+  hubAsset: Address;
+  amount: bigint;
+  sourceTxHash: Hex;
+  sourceLogIndex: bigint;
+  messageHash: Hex;
+};
+
+function decodeAcrossDepositMessage(message: Hex): AcrossDepositMessage | undefined {
+  try {
+    const decoded = decodeAbiParameters(
+      [
+        {
+          type: "tuple",
+          components: [
+            { name: "depositId", type: "uint256" },
+            { name: "intentType", type: "uint8" },
+            { name: "user", type: "address" },
+            { name: "spokeToken", type: "address" },
+            { name: "hubAsset", type: "address" },
+            { name: "amount", type: "uint256" },
+            { name: "sourceChainId", type: "uint256" },
+            { name: "destinationChainId", type: "uint256" }
+          ]
+        }
+      ],
+      message
+    ) as readonly [AcrossDepositMessage];
+    return decoded[0];
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeDepositProof(witness: DepositWitness): Hex {
+  return encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        components: [
+          { name: "sourceChainId", type: "uint256" },
+          { name: "depositId", type: "uint256" },
+          { name: "intentType", type: "uint8" },
+          { name: "user", type: "address" },
+          { name: "hubAsset", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "sourceTxHash", type: "bytes32" },
+          { name: "sourceLogIndex", type: "uint256" },
+          { name: "messageHash", type: "bytes32" }
+        ]
+      }
+    ],
+    [witness]
+  );
+}
+
 function validateStartupConfig() {
   if (!internalAuthSecret) {
     throw new Error("Missing INTERNAL_API_AUTH_SECRET");
@@ -929,10 +1050,13 @@ function validateStartupConfig() {
   if (relayerHubFinalityBlocks < 0n) {
     throw new Error("RELAYER_HUB_FINALITY_BLOCKS cannot be negative");
   }
-  if (!canonicalReceiverAddress) {
-    throw new Error("Missing HUB_CANONICAL_BRIDGE_RECEIVER_ADDRESS");
+  if (!acrossReceiverAddress) {
+    throw new Error("Missing HUB_ACROSS_RECEIVER_ADDRESS");
   }
-  if (!spokeCanonicalBridgeAddress) {
-    throw new Error("Missing SPOKE_CANONICAL_BRIDGE_ADDRESS");
+  if (!hubAcrossSpokePoolAddress) {
+    throw new Error("Missing HUB_ACROSS_SPOKE_POOL_ADDRESS");
+  }
+  if (!spokeAcrossSpokePoolAddress) {
+    throw new Error("Missing SPOKE_ACROSS_SPOKE_POOL_ADDRESS");
   }
 }

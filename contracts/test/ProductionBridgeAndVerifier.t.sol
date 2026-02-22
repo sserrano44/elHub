@@ -4,8 +4,10 @@ pragma solidity ^0.8.24;
 import {TestBase} from "./utils/TestBase.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockCanonicalTokenBridge} from "../src/mocks/MockCanonicalTokenBridge.sol";
+import {MockAcrossSpokePool} from "../src/mocks/MockAcrossSpokePool.sol";
 import {SpokePortal} from "../src/spoke/SpokePortal.sol";
 import {CanonicalBridgeAdapter} from "../src/spoke/CanonicalBridgeAdapter.sol";
+import {AcrossBridgeAdapter} from "../src/spoke/AcrossBridgeAdapter.sol";
 import {Verifier} from "../src/zk/Verifier.sol";
 import {Groth16VerifierAdapter} from "../src/zk/Groth16VerifierAdapter.sol";
 
@@ -93,6 +95,48 @@ contract ProductionBridgeAndVerifierTest is TestBase {
         adapter.setAllowedCaller(address(this), true);
 
         vm.expectRevert(abi.encodeWithSelector(CanonicalBridgeAdapter.RouteNotEnabled.selector, address(localToken)));
+        adapter.bridgeToHub(address(localToken), 1e6, address(0xBEEF), bytes("x"));
+    }
+
+    function test_acrossBridgeAdapter_bridgesThroughConfiguredRoute() external {
+        MockERC20 localToken = new MockERC20("Local USDC", "USDC", 6);
+        MockERC20 hubToken = new MockERC20("Hub USDC", "USDC", 6);
+        MockAcrossSpokePool spokePool = new MockAcrossSpokePool();
+
+        SpokePortal portal = new SpokePortal(address(this), 8453);
+        AcrossBridgeAdapter adapter = new AcrossBridgeAdapter(address(this), 8453);
+
+        adapter.setAllowedCaller(address(portal), true);
+        adapter.setRoute(address(localToken), address(spokePool), address(hubToken), address(0), 300_000, true);
+        portal.setBridgeAdapter(address(adapter));
+        portal.setHubRecipient(address(0xBEEF));
+
+        uint256 amount = 70e6;
+        localToken.mint(user, amount);
+
+        vm.prank(user);
+        localToken.approve(address(portal), amount);
+
+        vm.prank(user);
+        uint256 depositId = portal.initiateSupply(address(localToken), amount, user);
+
+        assertEq(depositId, 1, "first deposit id should be 1");
+        assertEq(localToken.balanceOf(address(spokePool)), amount, "Across spoke pool should receive escrowed tokens");
+        assertEq(spokePool.nextDepositId(), 1, "spoke pool deposit counter should increment");
+    }
+
+    function test_acrossBridgeAdapter_rejectsUnauthorizedCallerAndMissingRoute() external {
+        MockERC20 localToken = new MockERC20("Local USDC", "USDC", 6);
+        AcrossBridgeAdapter adapter = new AcrossBridgeAdapter(address(this), 8453);
+
+        localToken.mint(address(this), 1e6);
+        localToken.approve(address(adapter), 1e6);
+
+        vm.expectRevert(abi.encodeWithSelector(AcrossBridgeAdapter.UnauthorizedCaller.selector, address(this)));
+        adapter.bridgeToHub(address(localToken), 1e6, address(0xBEEF), bytes("x"));
+
+        adapter.setAllowedCaller(address(this), true);
+        vm.expectRevert(abi.encodeWithSelector(AcrossBridgeAdapter.RouteNotEnabled.selector, address(localToken)));
         adapter.bridgeToHub(address(localToken), 1e6, address(0xBEEF), bytes("x"));
     }
 

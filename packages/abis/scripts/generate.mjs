@@ -12,6 +12,7 @@ const contracts = [
   "HubLockManager",
   "HubSettlement",
   "HubCustody",
+  "HubAcrossReceiver",
   "CanonicalBridgeReceiverAdapter",
   "TokenRegistry",
   "KinkInterestRateModel",
@@ -19,10 +20,13 @@ const contracts = [
   "MockOracle",
   "SpokePortal",
   "MockBridgeAdapter",
+  "AcrossBridgeAdapter",
   "CanonicalBridgeAdapter",
+  "MockAcrossSpokePool",
   "MockCanonicalTokenBridge",
   "Verifier",
-  "Groth16VerifierAdapter"
+  "Groth16VerifierAdapter",
+  "DepositProofVerifierStub"
 ];
 
 if (!fs.existsSync(outDir)) {

@@ -81,7 +81,7 @@ const depositSchema = z.object({
     intentType: z.number().int(),
     token: z.string().startsWith("0x"),
     amount: z.string(),
-    status: z.enum(["initiated", "bridged", "settled"]),
+    status: z.enum(["initiated", "pending_fill", "bridged", "settled"]),
     metadata: z.record(z.unknown()).optional()
 });
 app.use(rateLimitMiddleware);
