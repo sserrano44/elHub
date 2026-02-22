@@ -14,5 +14,5 @@ interface IDepositProofVerifier {
         bytes32 messageHash;
     }
 
-    function verifyDepositProof(bytes calldata proof, DepositWitness calldata witness) external returns (bool);
+    function verifyDepositProof(bytes calldata proof, DepositWitness calldata witness) external view returns (bool);
 }

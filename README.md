@@ -72,6 +72,7 @@ pnpm dev
 - `HubLockManager`: mandatory lock/reservation for borrow/withdraw intents.
 - `HubSettlement`: batched settlement with verifier, replay protection, lock/fill/deposit checks.
 - `Verifier`: `DEV_MODE` dummy proof support + real verifier slot.
+- `DepositProofVerifier`: witness->public-input adapter for deposit proof verification.
 - `HubCustody`: bridged funds intake + controlled release to market.
 - `HubAcrossReceiver`: Across callback receiver that records pending fills and finalizes deposits only after proof verification.
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
@@ -80,7 +81,7 @@ pnpm dev
 - `SpokePortal`: supply/repay initiation (escrow + bridge call) and fill execution for borrow/withdraw.
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
-- `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and hub relay simulation.
+- `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and local callback simulation in E2E harnesses.
 - `CanonicalBridgeAdapter`: production adapter with allowlisted callers and per-token canonical routes.
 
 ## End-to-end lifecycle
@@ -88,7 +89,7 @@ pnpm dev
 ### Supply / Repay
 1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
 2. Across transport emits source deposit event on spoke.
-3. Hub `HubAcrossReceiver` callback records a `pending_fill` (untrusted message, no custody credit yet).
+3. Across destination fill triggers hub callback; `HubAcrossReceiver` records `pending_fill` (untrusted message, no custody credit yet).
 4. Anyone can call `HubAcrossReceiver.finalizePendingDeposit` with a valid deposit proof.
 5. On proof success, receiver moves bridged funds into `HubCustody` and registers the bridged deposit exactly once.
 6. Prover batches deposit actions and submits settlement proof.
@@ -221,6 +222,8 @@ This wrapper runs `scripts/e2e-fork.mjs` with `E2E_SUPPLY_ONLY=1` and asserts:
 1. deposit reaches `pending_fill`
 2. deposit is proof-finalized to `bridged`
 3. settlement credits supply on hub
+
+For local/fork tests only, the script simulates the destination relay callback with `MockAcrossSpokePool.relayV3Deposit`; production relayer runtime no longer performs this relay simulation.
 
 ### Circuit-mode fork E2E (real Groth16 path, no dev verifier)
 
@@ -358,6 +361,11 @@ After local deploy:
   - deploy `HubAcrossReceiver(admin, custody, depositProofVerifier, hubSpokePool)`
   - grant `CANONICAL_BRIDGE_RECEIVER_ROLE` on `HubCustody` to `HubAcrossReceiver`
   - do not grant attester/operator EOAs any custody bridge registration role
+- Relayer inbound behavior:
+  - observe spoke `V3FundsDeposited` for source metadata (`initiated`)
+  - observe hub `PendingDepositRecorded` for `pending_fill`
+  - request proof from prover and call `finalizePendingDeposit`
+  - do not call `relayV3Deposit` in production runtime
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
   - deploy generated verifier (from `snarkjs zkey export solidityverifier`)
   - deploy `Groth16VerifierAdapter(owner, generatedVerifier)`
@@ -373,7 +381,7 @@ After local deploy:
 - Intent finalization replay blocked via lock consumption + settled intent tracking.
 - Spoke double-fills blocked by `filledIntent` mapping.
 - `DEV_MODE` verifier does not provide production cryptographic guarantees.
-- Local Across flow uses mocked SpokePools and a stub deposit verifier; production must use real Across contracts and a real light-client/ZK deposit proof verifier.
+- Local Across flow still uses mocked SpokePools; production must use real Across contracts and a production-grade light-client/ZK deposit proof backend.
 
 ## Production readiness
 - Detailed execution plan: `PRODUCTION_READINESS_PLAN.md`

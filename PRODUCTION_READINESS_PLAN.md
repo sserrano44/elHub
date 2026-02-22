@@ -56,13 +56,11 @@ Acceptance criteria:
 
 ### P0-2 Canonical bridge attestation path for deposits
 
-Status: Not production-safe yet.
+Status: In progress.
 
 Current blockers:
-- Relayer still mints hub assets in simulation path:
-  - `/services/relayer/src/server.ts`
-- Custody trust currently depends on `BRIDGE_ROLE` operator registration:
-  - `/contracts/src/hub/HubCustody.sol`
+- Deposit proof backend still needs full source-event validity constraints (light-client/ZK completeness).
+- Local/fork test environments still rely on mocked Across SpokePools for transport simulation.
 
 Deliverables:
 1. Implement canonical bridge event ingestion in relayer/indexer:
@@ -71,6 +69,11 @@ Deliverables:
 2. Modify custody ingestion so deposits are accepted only from canonical bridge receiver path.
 3. Add anti-replay keying over `(originChainId, originTxHash, originLogIndex, depositId)`.
 4. Remove operator mint simulation from production runtime path.
+
+Implemented:
+1. Relayer no longer calls `relayV3Deposit` in runtime path.
+2. Relayer now derives `pending_fill` from hub `PendingDepositRecorded` events and finalizes with prover-fetched proof.
+3. Custody registration authority remains exclusively `CANONICAL_BRIDGE_RECEIVER_ROLE` through `HubAcrossReceiver`.
 
 Acceptance criteria:
 1. A deposit cannot be credited unless canonical receive is observed/finalized.

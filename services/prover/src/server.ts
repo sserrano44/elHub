@@ -9,11 +9,13 @@ import {
   formatEther,
   parseEther,
   http,
-  type Address
+  type Address,
+  type Hex
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { HubSettlementAbi } from "@elhub/abis";
 import { buildBatch } from "./batch";
+import { buildDepositProofBatch, type DepositWitnessProofInput } from "./deposit-proof";
 import { CircuitProofProvider, DevProofProvider, type ProofProvider } from "./proof";
 import type { QueuedAction } from "./types";
 import {
@@ -165,6 +167,18 @@ const actionSchema = z.discriminatedUnion("kind", [
   })
 ]);
 
+const depositWitnessSchema = z.object({
+  sourceChainId: z.string(),
+  depositId: z.string(),
+  intentType: z.number().int().min(1).max(2),
+  user: z.string().startsWith("0x"),
+  hubAsset: z.string().startsWith("0x"),
+  amount: z.string(),
+  sourceTxHash: z.string().startsWith("0x"),
+  sourceLogIndex: z.string(),
+  messageHash: z.string().startsWith("0x")
+});
+
 const queueStore: ProverQueueStore = proverStoreKind === "sqlite"
   ? new SqliteProverQueueStore(dbPath, initialBatchId)
   : new JsonProverQueueStore(queuePath, statePath, initialBatchId);
@@ -202,6 +216,31 @@ app.post("/internal/enqueue", (req, res) => {
 
   auditLog(req as RequestWithMeta, "enqueue_ok", { queued: queueStore.getQueuedCount() });
   res.json({ ok: true, queued: queueStore.getQueuedCount() });
+});
+
+app.post("/internal/deposit-proof", async (req, res) => {
+  const parsed = depositWitnessSchema.safeParse(req.body);
+  if (!parsed.success) {
+    auditLog(req as RequestWithMeta, "deposit_proof_rejected", { reason: "invalid_payload" });
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const witness = normalizeDepositWitness(parsed.data);
+    const batch = buildDepositProofBatch(witness);
+    const { proof, publicInputs } = await proofProvider.prove(batch);
+
+    auditLog(req as RequestWithMeta, "deposit_proof_ok");
+    res.json({
+      ok: true,
+      proof,
+      publicInputs: publicInputs.map((value) => value.toString())
+    });
+  } catch (error) {
+    auditLog(req as RequestWithMeta, "deposit_proof_error", { message: (error as Error).message });
+    res.status(500).json({ ok: false, error: (error as Error).message });
+  }
 });
 
 app.post("/internal/flush", async (_req, res) => {
@@ -392,6 +431,20 @@ function normalizeAction(input: z.infer<typeof actionSchema>): QueuedAction {
     amount: BigInt(input.amount),
     fee: BigInt(input.fee),
     relayer: input.relayer as Address
+  };
+}
+
+function normalizeDepositWitness(input: z.infer<typeof depositWitnessSchema>): DepositWitnessProofInput {
+  return {
+    sourceChainId: BigInt(input.sourceChainId),
+    depositId: BigInt(input.depositId),
+    intentType: input.intentType,
+    user: input.user as Address,
+    hubAsset: input.hubAsset as Address,
+    amount: BigInt(input.amount),
+    sourceTxHash: input.sourceTxHash as Hex,
+    sourceLogIndex: BigInt(input.sourceLogIndex),
+    messageHash: input.messageHash as Hex
   };
 }
 

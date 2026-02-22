@@ -252,7 +252,7 @@ async function main() {
     custody,
     lockManager
   ]);
-  const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifierStub", []);
+  const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifier", [verifier]);
   const hubAcrossSpokePool = await deploy(hubWallet, hubPublic, "MockAcrossSpokePool", []);
   const hubAcrossReceiver = await deploy(hubWallet, hubPublic, "HubAcrossReceiver", [
     deployer.address,

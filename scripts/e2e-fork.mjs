@@ -7,11 +7,14 @@ import { createHash, createHmac } from "node:crypto";
 import {
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   defineChain,
   encodeAbiParameters,
   formatEther,
   http,
   keccak256,
+  parseAbi,
+  parseAbiItem,
   parseEther,
   parseUnits
 } from "viem";
@@ -63,6 +66,12 @@ const E2E_USE_TENDERLY_FUNDING = (process.env.E2E_USE_TENDERLY_FUNDING ?? "1") !
 
 const supplyAmount = parseUnits("250", 6);
 const borrowAmount = parseUnits("25", 6);
+const MockAcrossSpokePoolAbi = parseAbi([
+  "function relayV3Deposit(uint256 originChainId,bytes32 originTxHash,uint256 originLogIndex,address outputToken,uint256 outputAmount,address recipient,bytes message)"
+]);
+const AcrossFundsDepositedEvent = parseAbiItem(
+  "event V3FundsDeposited(uint256 indexed depositId, address indexed depositor, address indexed recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes message, address caller)"
+);
 
 const intentTypes = {
   Intent: [
@@ -231,11 +240,21 @@ async function main() {
     args: [portal, supplyAmount]
   });
 
-  await writeAndWait(spokeWallet, spokePublic, {
+  const supplyTxHash = await writeAndWait(spokeWallet, spokePublic, {
     abi: SpokePortalAbi,
     address: portal,
     functionName: "initiateSupply",
     args: [usdcSpoke, supplyAmount, userAccount.address]
+  });
+
+  await simulateAcrossRelay({
+    spokePublic,
+    hubPublic,
+    hubWallet,
+    sourceAcrossSpokePool: deployments.spoke.acrossSpokePool,
+    hubAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
+    sourceChainId: BigInt(SPOKE_CHAIN_ID),
+    sourceTxHash: supplyTxHash
   });
 
   const depositId = Number(nextDepositId) + 1;
@@ -490,6 +509,65 @@ async function writeAndWait(walletClient, publicClient, request) {
   });
   await publicClient.waitForTransactionReceipt({ hash });
   return hash;
+}
+
+async function simulateAcrossRelay({
+  spokePublic,
+  hubPublic,
+  hubWallet,
+  sourceAcrossSpokePool,
+  hubAcrossSpokePool,
+  sourceChainId,
+  sourceTxHash
+}) {
+  const receipt = await spokePublic.getTransactionReceipt({ hash: sourceTxHash });
+  let relayArgs;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== sourceAcrossSpokePool.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: [AcrossFundsDepositedEvent],
+        eventName: "V3FundsDeposited",
+        data: log.data,
+        topics: log.topics
+      });
+      relayArgs = {
+        originLogIndex: log.logIndex,
+        outputToken: decoded.args.outputToken,
+        outputAmount: decoded.args.outputAmount,
+        destinationChainId: decoded.args.destinationChainId,
+        recipient: decoded.args.recipient,
+        message: decoded.args.message
+      };
+      break;
+    } catch {
+      // ignore non-matching logs
+    }
+  }
+
+  if (!relayArgs) {
+    throw new Error("missing V3FundsDeposited log for supply tx");
+  }
+  if (relayArgs.destinationChainId !== BigInt(HUB_CHAIN_ID)) {
+    throw new Error(
+      `unexpected destination chain in deposit log. expected=${HUB_CHAIN_ID} got=${relayArgs.destinationChainId.toString()}`
+    );
+  }
+
+  await writeAndWait(hubWallet, hubPublic, {
+    abi: MockAcrossSpokePoolAbi,
+    address: hubAcrossSpokePool,
+    functionName: "relayV3Deposit",
+    args: [
+      sourceChainId,
+      sourceTxHash,
+      relayArgs.originLogIndex,
+      relayArgs.outputToken,
+      relayArgs.outputAmount,
+      relayArgs.recipient,
+      relayArgs.message
+    ]
+  });
 }
 
 async function run(cmd, args, options) {

@@ -266,9 +266,9 @@ Mock adapter:
 1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
 2. Spoke portal escrows funds and calls Across transport (`AcrossBridgeAdapter -> depositV3`).
 3. Relayer observes source Across deposit event and records `initiated`.
-4. Hub `MockAcrossSpokePool` relay calls `HubAcrossReceiver.handleV3AcrossMessage`:
+4. Across destination fill calls `HubAcrossReceiver.handleV3AcrossMessage`:
    1. receiver records `pending_fill` only (no custody credit).
-5. Relayer (or any caller) submits proof to `finalizePendingDeposit`.
+5. Relayer observes hub `PendingDepositRecorded`, requests proof from prover, then calls `finalizePendingDeposit`.
 6. On valid proof:
    1. receiver transfers bridged token to `HubCustody`.
    2. receiver calls `HubCustody.registerBridgedDeposit`.
@@ -519,7 +519,7 @@ Enforced in current implementation:
 7. Pause controls on lock manager, settlement, market, and spoke portal.
 
 Known security gaps (tracked by readiness plan):
-1. Deposit proof verifier trust/quality (production must use real light-client/ZK verifier, not stub).
+1. Deposit proof backend trust/quality (production must use real light-client/ZK verification constraints for source event validity).
 2. Production DB/idempotent outbox model for services (P0-4).
 3. Full validity constraints in ZK circuit (remaining P0-1 work).
 4. Governance hardening, oracle hardening, and audit closure (P1/P2).
@@ -531,6 +531,6 @@ The remaining blockers are:
    1. prove deposit attestation validity
    2. prove lock/fill matching validity
    3. prove amount/fee constraint validity
-2. Ship production deposit proof verifier backend (light-client/ZK) and retire stub verifier.
+2. Ship production deposit proof backend (light-client/ZK) with full source-event validity constraints.
 3. Complete P0-4 durable persistence migration from JSON to transactional DB + outbox.
 4. Execute P1 and P2 workstreams as defined in `/Users/sebas/projects/elhub/PRODUCTION_READINESS_PLAN.md`.

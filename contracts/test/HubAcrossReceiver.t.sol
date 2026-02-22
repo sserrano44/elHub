@@ -7,7 +7,8 @@ import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockAcrossSpokePool} from "../src/mocks/MockAcrossSpokePool.sol";
 import {HubCustody} from "../src/hub/HubCustody.sol";
 import {HubAcrossReceiver} from "../src/hub/HubAcrossReceiver.sol";
-import {DepositProofVerifierStub} from "../src/zk/DepositProofVerifierStub.sol";
+import {DepositProofVerifier} from "../src/zk/DepositProofVerifier.sol";
+import {Verifier} from "../src/zk/Verifier.sol";
 import {IDepositProofVerifier} from "../src/interfaces/IDepositProofVerifier.sol";
 
 contract HubAcrossReceiverTest is TestBase {
@@ -18,7 +19,8 @@ contract HubAcrossReceiverTest is TestBase {
 
     MockERC20 internal hubUsdc;
     HubCustody internal custody;
-    DepositProofVerifierStub internal verifier;
+    DepositProofVerifier internal verifier;
+    Verifier internal proofBackend;
     MockAcrossSpokePool internal spokePool;
     HubAcrossReceiver internal receiver;
 
@@ -28,7 +30,8 @@ contract HubAcrossReceiverTest is TestBase {
 
         hubUsdc = new MockERC20("Hub USDC", "USDC", 6);
         custody = new HubCustody(address(this));
-        verifier = new DepositProofVerifierStub();
+        proofBackend = new Verifier(address(this), true, keccak256(bytes("ZKHUB_DEV_PROOF")), address(0), 4);
+        verifier = new DepositProofVerifier(proofBackend);
         spokePool = new MockAcrossSpokePool();
         receiver = new HubAcrossReceiver(address(this), custody, verifier, address(spokePool));
 
@@ -75,7 +78,7 @@ contract HubAcrossReceiverTest is TestBase {
     function test_replayFinalizationRejected() external {
         (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,) =
             _relayPendingDeposit(4, Constants.INTENT_SUPPLY, attacker, 75e6);
-        bytes memory proof = abi.encode(witness);
+        bytes memory proof = bytes("ZKHUB_DEV_PROOF");
 
         vm.prank(attacker);
         receiver.finalizePendingDeposit(pendingId, proof, witness);
@@ -90,7 +93,7 @@ contract HubAcrossReceiverTest is TestBase {
     function test_validCallbackAndProofCreditsExactlyOnce() external {
         (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,) =
             _relayPendingDeposit(5, Constants.INTENT_REPAY, attacker, 120e6);
-        bytes memory proof = abi.encode(witness);
+        bytes memory proof = bytes("ZKHUB_DEV_PROOF");
 
         vm.prank(attacker);
         receiver.finalizePendingDeposit(pendingId, proof, witness);
