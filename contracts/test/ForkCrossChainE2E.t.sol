@@ -169,7 +169,7 @@ contract ForkCrossChainE2ETest is TestBase {
 
         vm.selectFork(baseForkId);
         vm.prank(relayer);
-        settlement.recordFillEvidence(
+        settlement.recordVerifiedFillEvidence(
             intentId,
             Constants.INTENT_BORROW,
             user,
@@ -273,7 +273,7 @@ contract ForkCrossChainE2ETest is TestBase {
 
         custody.grantRole(custody.CANONICAL_BRIDGE_RECEIVER_ROLE(), bridgeOperator);
         custody.grantRole(custody.SETTLEMENT_ROLE(), address(settlement));
-        settlement.grantRole(settlement.RELAYER_ROLE(), relayer);
+        settlement.grantRole(settlement.PROOF_FILL_ROLE(), relayer);
 
         oracle.setPrice(address(hubUsdc), 1e8);
         oracle.setPrice(BASE_WETH, 3_000e8);

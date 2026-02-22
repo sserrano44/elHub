@@ -15,7 +15,6 @@ import {IHubSettlement} from "../interfaces/IHubSettlement.sol";
 
 contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettlement {
     bytes32 public constant SETTLEMENT_ADMIN_ROLE = keccak256("SETTLEMENT_ADMIN_ROLE");
-    bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
     bytes32 public constant PROOF_FILL_ROLE = keccak256("PROOF_FILL_ROLE");
 
     IVerifier public verifier;
@@ -85,7 +84,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     error FillEvidenceMismatch(bytes32 intentId);
     error FillEvidenceAlreadyExists(bytes32 intentId);
     error FillEvidenceAlreadyConsumed(bytes32 intentId);
-    error FillEvidenceRelayerMismatch(address caller, address relayer);
+    error UnsupportedFillEvidenceIntentType(uint8 intentType);
     error FillEvidenceLockNotActive(bytes32 intentId, uint8 status);
     error FillEvidenceLockExpired(bytes32 intentId, uint256 expiry);
     error FillEvidenceLockMismatch(bytes32 intentId);
@@ -136,7 +135,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         _unpause();
     }
 
-    function recordFillEvidence(
+    function recordVerifiedFillEvidence(
         bytes32 intentId,
         uint8 intentType,
         address user,
@@ -144,34 +143,14 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         uint256 amount,
         uint256 fee,
         address relayer
-    ) external onlyRole(RELAYER_ROLE) {
-        FillEvidenceInput memory input = FillEvidenceInput({
-            intentType: intentType,
-            user: user,
-            hubAsset: hubAsset,
-            amount: amount,
-            fee: fee,
-            relayer: relayer
-        });
-
-        if (input.relayer != msg.sender) {
-            revert FillEvidenceRelayerMismatch(msg.sender, input.relayer);
-        }
-        _recordFillEvidence(intentId, input);
-    }
-
-    function recordVerifiedBorrowFillEvidence(
-        bytes32 intentId,
-        address user,
-        address hubAsset,
-        uint256 amount,
-        uint256 fee,
-        address relayer
     ) external onlyRole(PROOF_FILL_ROLE) {
+        if (intentType != Constants.INTENT_BORROW && intentType != Constants.INTENT_WITHDRAW) {
+            revert UnsupportedFillEvidenceIntentType(intentType);
+        }
         _recordFillEvidence(
             intentId,
             FillEvidenceInput({
-                intentType: Constants.INTENT_BORROW,
+                intentType: intentType,
                 user: user,
                 hubAsset: hubAsset,
                 amount: amount,

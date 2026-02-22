@@ -66,6 +66,7 @@ const E2E_USE_TENDERLY_FUNDING = (process.env.E2E_USE_TENDERLY_FUNDING ?? "1") !
 
 const supplyAmount = parseUnits("250", 6);
 const borrowAmount = parseUnits("25", 6);
+const withdrawAmount = parseUnits("10", 6);
 const MockAcrossSpokePoolAbi = parseAbi([
   "function relayV3Deposit(uint256 originChainId,bytes32 originTxHash,uint256 originLogIndex,address outputToken,uint256 outputAmount,address recipient,bytes message)"
 ]);
@@ -413,9 +414,130 @@ async function main() {
     throw new Error("expected non-zero hub debt after borrow settlement");
   }
 
+  const withdrawQuoteRes = await fetch(
+    `${RELAYER_API_URL}/quote?intentType=4&amount=${withdrawAmount.toString()}`
+  );
+  if (!withdrawQuoteRes.ok) {
+    throw new Error(`withdraw quote failed: ${withdrawQuoteRes.status} ${await withdrawQuoteRes.text()}`);
+  }
+  const withdrawQuote = await withdrawQuoteRes.json();
+  const withdrawRelayerFee = BigInt(withdrawQuote.fee);
+
+  const userHubSupplyBeforeWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: market,
+    functionName: "getUserSupply",
+    args: [userAccount.address, usdcHub]
+  });
+  const userSpokeUsdcBeforeWithdraw = await spokePublic.readContract({
+    abi: MockERC20Abi,
+    address: usdcSpoke,
+    functionName: "balanceOf",
+    args: [userAccount.address]
+  });
+
+  const withdrawIntent = {
+    intentType: 4,
+    user: userAccount.address,
+    inputChainId: BigInt(SPOKE_CHAIN_ID),
+    outputChainId: BigInt(SPOKE_CHAIN_ID),
+    inputToken: usdcSpoke,
+    outputToken: usdcSpoke,
+    amount: withdrawAmount,
+    recipient: userAccount.address,
+    maxRelayerFee: withdrawRelayerFee,
+    nonce: BigInt(Date.now()) + 1n,
+    deadline: BigInt(Math.floor(Date.now() / 1000)) + 1800n
+  };
+
+  const withdrawSignature = await userAccount.signTypedData({
+    domain: {
+      name: "ElHubIntentInbox",
+      version: "1",
+      chainId: HUB_CHAIN_ID,
+      verifyingContract: inbox
+    },
+    types: intentTypes,
+    primaryType: "Intent",
+    message: withdrawIntent
+  });
+
+  const withdrawIntentId = rawIntentId(withdrawIntent);
+  const withdrawSubmitRes = await fetch(`${RELAYER_API_URL}/intent/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      intent: {
+        ...withdrawIntent,
+        inputChainId: withdrawIntent.inputChainId.toString(),
+        outputChainId: withdrawIntent.outputChainId.toString(),
+        amount: withdrawIntent.amount.toString(),
+        maxRelayerFee: withdrawIntent.maxRelayerFee.toString(),
+        nonce: withdrawIntent.nonce.toString(),
+        deadline: withdrawIntent.deadline.toString()
+      },
+      signature: withdrawSignature,
+      relayerFee: withdrawRelayerFee.toString()
+    })
+  });
+  if (!withdrawSubmitRes.ok) {
+    throw new Error(`withdraw submit failed: ${withdrawSubmitRes.status} ${await withdrawSubmitRes.text()}`);
+  }
+  const withdrawSubmitPayload = await withdrawSubmitRes.json();
+  const withdrawDispatchTx = withdrawSubmitPayload.dispatchTx;
+  if (!withdrawDispatchTx) {
+    throw new Error("missing dispatchTx for withdraw across flow");
+  }
+
+  await simulateAcrossRelay({
+    sourcePublic: hubPublic,
+    destinationPublic: spokePublic,
+    destinationWallet: spokeWallet,
+    sourceAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
+    destinationAcrossSpokePool: deployments.spoke.acrossSpokePool,
+    sourceChainId: BigInt(HUB_CHAIN_ID),
+    sourceTxHash: withdrawDispatchTx,
+    expectedDestinationChainId: BigInt(SPOKE_CHAIN_ID),
+    flowLabel: "withdraw"
+  });
+
+  await postInternal(PROVER_API_URL, "/internal/flush", {}, INTERNAL_API_AUTH_SECRET);
+
+  await waitUntil(
+    async () => {
+      const res = await fetch(`${INDEXER_API_URL}/intents/${withdrawIntentId}`);
+      if (!res.ok) return false;
+      const payload = await res.json();
+      return payload.status === "settled";
+    },
+    "withdraw settlement",
+    120_000
+  );
+
+  const userHubSupplyAfterWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: market,
+    functionName: "getUserSupply",
+    args: [userAccount.address, usdcHub]
+  });
+  if (userHubSupplyAfterWithdraw >= userHubSupplyBeforeWithdraw) {
+    throw new Error("expected hub supply to decrease after withdraw settlement");
+  }
+
+  const userSpokeUsdcAfterWithdraw = await spokePublic.readContract({
+    abi: MockERC20Abi,
+    address: usdcSpoke,
+    functionName: "balanceOf",
+    args: [userAccount.address]
+  });
+  const withdrawExpectedNet = withdrawAmount - withdrawRelayerFee;
+  if (userSpokeUsdcAfterWithdraw - userSpokeUsdcBeforeWithdraw < withdrawExpectedNet) {
+    throw new Error("expected spoke balance increase from withdraw fill");
+  }
+
   console.log("[e2e] ==================================================");
-  console.log("[e2e] PASS: supply + borrow cross-chain lifecycle settled");
-  console.log("[e2e] checks: deposit settled on hub, borrow settled on hub");
+  console.log("[e2e] PASS: supply + borrow + withdraw cross-chain lifecycle settled");
+  console.log("[e2e] checks: deposit settled on hub, borrow settled on hub, withdraw settled on hub");
   console.log("[e2e] ==================================================");
   await stopAll();
 }

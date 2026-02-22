@@ -381,7 +381,6 @@ async function main() {
 
   const CANONICAL_BRIDGE_RECEIVER_ROLE = keccak256(stringToHex("CANONICAL_BRIDGE_RECEIVER_ROLE"));
   const SETTLEMENT_ROLE = keccak256(stringToHex("SETTLEMENT_ROLE"));
-  const RELAYER_ROLE = keccak256(stringToHex("RELAYER_ROLE"));
   const PROOF_FILL_ROLE = keccak256(stringToHex("PROOF_FILL_ROLE"));
 
   await write(hubWallet, hubPublic, {
@@ -391,7 +390,6 @@ async function main() {
     args: [CANONICAL_BRIDGE_RECEIVER_ROLE, hubAcrossReceiver]
   });
   await write(hubWallet, hubPublic, { address: custody, abi: custodyAbi, functionName: "grantRole", args: [SETTLEMENT_ROLE, settlement] });
-  await write(hubWallet, hubPublic, { address: settlement, abi: settlementAbi, functionName: "grantRole", args: [RELAYER_ROLE, relayer.address] });
   await write(hubWallet, hubPublic, {
     address: settlement,
     abi: settlementAbi,

@@ -309,7 +309,7 @@ contract HubProtocolTest is TestBase {
         portal.fillBorrow(borrowIntent, relayerFee, "");
 
         vm.prank(relayer);
-        settlement.recordFillEvidence(
+        settlement.recordVerifiedFillEvidence(
             intentId,
             Constants.INTENT_BORROW,
             user,
@@ -408,7 +408,7 @@ contract HubProtocolTest is TestBase {
         portal.fillBorrow(borrowIntent, 0, "");
 
         vm.prank(relayer);
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
 
         DataTypes.BorrowFinalize[] memory actions = new DataTypes.BorrowFinalize[](1);
         actions[0] = DataTypes.BorrowFinalize(intentId, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
@@ -531,7 +531,7 @@ contract HubProtocolTest is TestBase {
             )
         );
         vm.prank(relayer);
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
 
         DataTypes.BorrowFinalize[] memory noLockAction = new DataTypes.BorrowFinalize[](1);
         noLockAction[0] = DataTypes.BorrowFinalize(intentId, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
@@ -705,7 +705,7 @@ contract HubProtocolTest is TestBase {
         portal.fillBorrow(borrowIntent, 0, "");
 
         vm.prank(relayer);
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowAmount, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowAmount, 0, relayer);
 
         oracle.setPrice(address(hubWETH), 2_000e8);
 
@@ -758,7 +758,7 @@ contract HubProtocolTest is TestBase {
         portal.fillWithdraw(withdrawIntent, 0, "");
 
         vm.prank(relayer);
-        settlement.recordFillEvidence(
+        settlement.recordVerifiedFillEvidence(
             intentId, Constants.INTENT_WITHDRAW, user, address(hubWETH), withdrawAmount, 0, relayer
         );
 
@@ -815,14 +815,14 @@ contract HubProtocolTest is TestBase {
         bytes32 intentId = lockManager.lock(intent, sig);
 
         vm.prank(relayer);
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, relayer);
 
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceAlreadyExists.selector, intentId));
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, relayer);
     }
 
-    function test_fillEvidenceRequiresCallerRelayerAndMatchingLock() external {
+    function test_fillEvidenceRequiresProofRoleAndMatchingLock() external {
         vm.prank(user);
         hubUSDC.approve(address(market), type(uint256).max);
         vm.prank(user);
@@ -834,15 +834,13 @@ contract HubProtocolTest is TestBase {
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(intent, sig);
 
-        vm.prank(relayer);
-        vm.expectRevert(
-            abi.encodeWithSelector(HubSettlement.FillEvidenceRelayerMismatch.selector, relayer, user)
-        );
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, user);
+        vm.prank(user);
+        vm.expectRevert();
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, user);
 
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceLockMismatch.selector, intentId));
-        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount - 1, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount - 1, 0, relayer);
     }
 
     function test_tokenRegistryReRegisterHubTokenClearsOldSpokeMapping() external {
@@ -1345,7 +1343,7 @@ contract HubProtocolTest is TestBase {
         custody.grantRole(custody.CANONICAL_BRIDGE_RECEIVER_ROLE(), bridgeOperator);
         custody.grantRole(custody.SETTLEMENT_ROLE(), address(settlement));
 
-        settlement.grantRole(settlement.RELAYER_ROLE(), relayer);
+        settlement.grantRole(settlement.PROOF_FILL_ROLE(), relayer);
 
         portal.setBridgeAdapter(address(bridgeAdapter));
         portal.setHubRecipient(address(custody));

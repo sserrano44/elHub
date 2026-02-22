@@ -57,6 +57,11 @@
                 "internalType": "bytes32"
             },
             {
+                "name": "intentType",
+                "type": "uint8",
+                "internalType": "uint8"
+            },
+            {
                 "name": "user",
                 "type": "address",
                 "internalType": "address"
@@ -340,6 +345,12 @@
                 "internalType": "bytes32"
             },
             {
+                "name": "intentType",
+                "type": "uint8",
+                "indexed": false,
+                "internalType": "uint8"
+            },
+            {
                 "name": "hubAsset",
                 "type": "address",
                 "indexed": true,
@@ -561,6 +572,17 @@
                 "name": "finalizer",
                 "type": "address",
                 "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidIntentType",
+        "inputs": [
+            {
+                "name": "intentType",
+                "type": "uint8",
+                "internalType": "uint8"
             }
         ]
     },

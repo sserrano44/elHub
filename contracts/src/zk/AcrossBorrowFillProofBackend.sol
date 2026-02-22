@@ -8,7 +8,7 @@ import {IAcrossBorrowFillEventVerifier} from "../interfaces/IAcrossBorrowFillEve
 import {IAcrossBorrowFillProofBackend} from "../interfaces/IAcrossBorrowFillProofBackend.sol";
 import {Constants} from "../libraries/Constants.sol";
 
-/// @notice Canonical source-event backend for borrow fill proofs.
+/// @notice Canonical source-event backend for outbound fill proofs (borrow/withdraw).
 /// @dev Verifies spoke finality + spoke BorrowFillRecorded inclusion and binds the proof to hub finalizer destination.
 contract AcrossBorrowFillProofBackend is Ownable, IAcrossBorrowFillProofBackend {
     ILightClientVerifier public immutable lightClientVerifier;
@@ -46,7 +46,7 @@ contract AcrossBorrowFillProofBackend is Ownable, IAcrossBorrowFillProofBackend 
         address destinationFinalizer,
         uint256 destinationChainId
     ) external view override returns (bool) {
-        if (witness.intentType != Constants.INTENT_BORROW) return false;
+        if (!_isSupportedIntentType(witness.intentType)) return false;
 
         address expectedReceiver = sourceReceiverByChain[witness.sourceChainId];
         if (expectedReceiver == address(0)) return false;
@@ -69,5 +69,9 @@ contract AcrossBorrowFillProofBackend is Ownable, IAcrossBorrowFillProofBackend 
             destinationFinalizer,
             proof.inclusionProof
         );
+    }
+
+    function _isSupportedIntentType(uint8 intentType) internal pure returns (bool) {
+        return intentType == Constants.INTENT_BORROW || intentType == Constants.INTENT_WITHDRAW;
     }
 }

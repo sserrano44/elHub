@@ -58,19 +58,6 @@
   },
   {
     "type": "function",
-    "name": "RELAYER_ROLE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "SETTLEMENT_ADMIN_ROLE",
     "inputs": [],
     "outputs": [
@@ -508,7 +495,7 @@
   },
   {
     "type": "function",
-    "name": "recordFillEvidence",
+    "name": "recordVerifiedFillEvidence",
     "inputs": [
       {
         "name": "intentId",
@@ -519,44 +506,6 @@
         "name": "intentType",
         "type": "uint8",
         "internalType": "uint8"
-      },
-      {
-        "name": "user",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "hubAsset",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "fee",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "relayer",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "recordVerifiedBorrowFillEvidence",
-    "inputs": [
-      {
-        "name": "intentId",
-        "type": "bytes32",
-        "internalType": "bytes32"
       },
       {
         "name": "user",
@@ -1257,22 +1206,6 @@
   },
   {
     "type": "error",
-    "name": "FillEvidenceRelayerMismatch",
-    "inputs": [
-      {
-        "name": "caller",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "relayer",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "IntentAlreadySettled",
     "inputs": [
       {
@@ -1387,6 +1320,17 @@
         "name": "max",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnsupportedFillEvidenceIntentType",
+    "inputs": [
+      {
+        "name": "intentType",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ]
   }

@@ -5,7 +5,7 @@ import {IBorrowFillProofVerifier} from "../interfaces/IBorrowFillProofVerifier.s
 import {IAcrossBorrowFillProofBackend} from "../interfaces/IAcrossBorrowFillProofBackend.sol";
 import {Constants} from "../libraries/Constants.sol";
 
-/// @notice Verifies canonical source-event borrow fill proofs.
+/// @notice Verifies canonical source-event outbound fill proofs (borrow/withdraw).
 /// @dev Proof includes source finality and source receiver event inclusion payloads.
 contract BorrowFillProofVerifier is IBorrowFillProofVerifier {
     IAcrossBorrowFillProofBackend public immutable backend;
@@ -24,7 +24,7 @@ contract BorrowFillProofVerifier is IBorrowFillProofVerifier {
         returns (bool)
     {
         if (
-            witness.sourceChainId == 0 || witness.intentId == bytes32(0) || witness.intentType != Constants.INTENT_BORROW
+            witness.sourceChainId == 0 || witness.intentId == bytes32(0) || !_isSupportedIntentType(witness.intentType)
                 || witness.user == address(0) || witness.recipient == address(0) || witness.spokeToken == address(0)
                 || witness.hubAsset == address(0) || witness.relayer == address(0) || witness.amount == 0
                 || witness.fee >= witness.amount || witness.sourceTxHash == bytes32(0) || witness.messageHash == bytes32(0)
@@ -60,5 +60,9 @@ contract BorrowFillProofVerifier is IBorrowFillProofVerifier {
         returns (IAcrossBorrowFillProofBackend.CanonicalSourceProof memory decoded)
     {
         decoded = abi.decode(proof, (IAcrossBorrowFillProofBackend.CanonicalSourceProof));
+    }
+
+    function _isSupportedIntentType(uint8 intentType) internal pure returns (bool) {
+        return intentType == Constants.INTENT_BORROW || intentType == Constants.INTENT_WITHDRAW;
     }
 }

@@ -150,7 +150,7 @@ const depositWitnessSchema = z.object({
 const borrowFillWitnessSchema = z.object({
     sourceChainId: z.string(),
     intentId: z.string().startsWith("0x"),
-    intentType: z.number().int().min(3).max(3),
+    intentType: z.number().int().min(3).max(4),
     user: z.string().startsWith("0x"),
     recipient: z.string().startsWith("0x"),
     spokeToken: z.string().startsWith("0x"),

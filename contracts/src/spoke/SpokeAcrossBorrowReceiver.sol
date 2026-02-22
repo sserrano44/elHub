@@ -15,6 +15,7 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
 
     struct BorrowDispatchMessage {
         bytes32 intentId;
+        uint8 intentType;
         address user;
         address recipient;
         address spokeToken;
@@ -26,7 +27,7 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
         address hubFinalizer;
     }
 
-    uint256 internal constant BORROW_DISPATCH_MESSAGE_BYTES = 32 * 10;
+    uint256 internal constant BORROW_DISPATCH_MESSAGE_BYTES = 32 * 11;
 
     address public spokePool;
 
@@ -57,6 +58,7 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
     error InvalidMessageAsset();
     error InvalidMessageAmount();
     error InvalidMessageFee(uint256 fee, uint256 amount);
+    error InvalidIntentType(uint8 intentType);
     error TokenAmountMismatch(address tokenSent, uint256 amountReceived, address spokeToken, uint256 amount);
     error IntentAlreadyFilled(bytes32 intentId);
 
@@ -89,6 +91,9 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
         if (decoded.user == address(0) || decoded.recipient == address(0) || decoded.relayer == address(0)) {
             revert InvalidMessageUser();
         }
+        if (decoded.intentType != Constants.INTENT_BORROW && decoded.intentType != Constants.INTENT_WITHDRAW) {
+            revert InvalidIntentType(decoded.intentType);
+        }
         if (decoded.spokeToken == address(0) || decoded.hubAsset == address(0) || tokenSent == address(0)) {
             revert InvalidMessageAsset();
         }
@@ -110,7 +115,7 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
 
         emit BorrowFillRecorded(
             decoded.intentId,
-            Constants.INTENT_BORROW,
+            decoded.intentType,
             decoded.user,
             decoded.recipient,
             decoded.spokeToken,

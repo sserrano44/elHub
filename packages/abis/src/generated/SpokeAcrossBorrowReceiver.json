@@ -423,6 +423,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidIntentType",
+    "inputs": [
+      {
+        "name": "intentType",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidMessageAmount",
     "inputs": []
   },

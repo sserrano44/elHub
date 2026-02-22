@@ -5,7 +5,7 @@ import express from "express";
 import { z } from "zod";
 import { createPublicClient, createWalletClient, decodeAbiParameters, defineChain, encodeAbiParameters, http, keccak256, parseAbi, parseAbiItem } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { HubLockManagerAbi, HubSettlementAbi, MockERC20Abi, SpokePortalAbi } from "@elhub/abis";
+import { HubLockManagerAbi, MockERC20Abi } from "@elhub/abis";
 var IntentType;
 (function (IntentType) {
     IntentType[IntentType["SUPPLY"] = 1] = "SUPPLY";
@@ -45,12 +45,10 @@ const spokeRpc = process.env.SPOKE_RPC_URL ?? "http://127.0.0.1:9545";
 const hubChainId = BigInt(process.env.HUB_CHAIN_ID ?? "8453");
 const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID ?? "480");
 const lockManagerAddress = process.env.HUB_LOCK_MANAGER_ADDRESS;
-const settlementAddress = process.env.HUB_SETTLEMENT_ADDRESS;
 const custodyAddress = process.env.HUB_CUSTODY_ADDRESS;
 const acrossReceiverAddress = process.env.HUB_ACROSS_RECEIVER_ADDRESS;
 const acrossBorrowDispatcherAddress = process.env.HUB_ACROSS_BORROW_DISPATCHER_ADDRESS;
 const acrossBorrowFinalizerAddress = process.env.HUB_ACROSS_BORROW_FINALIZER_ADDRESS;
-const portalAddress = process.env.SPOKE_PORTAL_ADDRESS;
 const spokeAcrossSpokePoolAddress = process.env.SPOKE_ACROSS_SPOKE_POOL_ADDRESS;
 const spokeBorrowReceiverAddress = process.env.SPOKE_BORROW_RECEIVER_ADDRESS;
 const relayerKey = process.env.RELAYER_PRIVATE_KEY;
@@ -66,12 +64,10 @@ const apiRateMaxRequests = Number(process.env.API_RATE_MAX_REQUESTS ?? "1200");
 const rateBuckets = new Map();
 const spokeToHub = JSON.parse(process.env.SPOKE_TO_HUB_TOKEN_MAP ?? "{}");
 if (!lockManagerAddress
-    || !settlementAddress
     || !custodyAddress
     || !acrossReceiverAddress
     || !acrossBorrowDispatcherAddress
     || !acrossBorrowFinalizerAddress
-    || !portalAddress
     || !spokeAcrossSpokePoolAddress
     || !spokeBorrowReceiverAddress
     || !relayerKey) {
@@ -97,12 +93,11 @@ const spokeChain = defineChain({
 const hubPublic = createPublicClient({ chain: hubChain, transport: http(hubRpc) });
 const spokePublic = createPublicClient({ chain: spokeChain, transport: http(spokeRpc) });
 const hubWallet = createWalletClient({ account: relayerAccount, chain: hubChain, transport: http(hubRpc) });
-const spokeWallet = createWalletClient({ account: relayerAccount, chain: spokeChain, transport: http(spokeRpc) });
 const acrossReceiverAbi = parseAbi([
     "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
 const acrossBorrowDispatcherAbi = parseAbi([
-    "function dispatchBorrowFill(bytes32 intentId,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset) returns (bytes32)"
+    "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset) returns (bytes32)"
 ]);
 const acrossBorrowFinalizerAbi = parseAbi([
     "function finalizeBorrowFill(bytes proof,(uint256 sourceChainId,bytes32 intentId,uint8 intentType,address user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
@@ -176,7 +171,7 @@ app.post("/intent/submit", async (req, res) => {
         const intent = parseIntent(parsed.data.intent);
         const signature = parsed.data.signature;
         const relayerFee = BigInt(parsed.data.relayerFee);
-        if (intent.intentType !== IntentType.BORROW && intent.intentType !== IntentType.WITHDRAW) {
+        if (!toOutboundIntentKind(intent.intentType)) {
             auditLog(req, "submit_rejected", { reason: "unsupported_intent_type", intentType: intent.intentType });
             res.status(400).json({ error: "only borrow/withdraw are relayed in this endpoint" });
             return;
@@ -198,105 +193,44 @@ app.post("/intent/submit", async (req, res) => {
         if (!hubAsset) {
             throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
         }
-        if (intent.intentType === IntentType.BORROW) {
-            await hubWallet.writeContract({
-                abi: MockERC20Abi,
-                address: hubAsset,
-                functionName: "approve",
-                args: [acrossBorrowDispatcherAddress, intent.amount],
-                account: relayerAccount
-            });
-            const dispatchTx = await hubWallet.writeContract({
-                abi: acrossBorrowDispatcherAbi,
-                address: acrossBorrowDispatcherAddress,
-                functionName: "dispatchBorrowFill",
-                args: [
-                    intentId,
-                    intent.user,
-                    intent.recipient,
-                    intent.outputToken,
-                    intent.amount,
-                    intent.outputChainId,
-                    relayerFee,
-                    intent.maxRelayerFee,
-                    hubAsset
-                ],
-                account: relayerAccount
-            });
-            await hubPublic.waitForTransactionReceipt({ hash: dispatchTx });
-            await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx });
-            auditLog(req, "submit_ok", {
-                intentId,
-                intentType: intent.intentType,
-                lockTx,
-                dispatchTx
-            });
-            res.json({
-                intentId,
-                status: "locked",
-                lockTx,
-                dispatchTx
-            });
-            return;
-        }
-        await updateIntentStatus(intentId, "locked", { lockTx });
-        await spokeWallet.writeContract({
+        await hubWallet.writeContract({
             abi: MockERC20Abi,
-            address: intent.outputToken,
+            address: hubAsset,
             functionName: "approve",
-            args: [portalAddress, intent.amount],
+            args: [acrossBorrowDispatcherAddress, intent.amount],
             account: relayerAccount
         });
-        const fillTx = await spokeWallet.writeContract({
-            abi: SpokePortalAbi,
-            address: portalAddress,
-            functionName: "fillWithdraw",
-            args: [intent, relayerFee, "0x"],
-            account: relayerAccount
-        });
-        await spokePublic.waitForTransactionReceipt({ hash: fillTx });
-        await updateIntentStatus(intentId, "filled", { fillTx });
-        const recordTx = await hubWallet.writeContract({
-            abi: HubSettlementAbi,
-            address: settlementAddress,
-            functionName: "recordFillEvidence",
+        const dispatchTx = await hubWallet.writeContract({
+            abi: acrossBorrowDispatcherAbi,
+            address: acrossBorrowDispatcherAddress,
+            functionName: "dispatchBorrowFill",
             args: [
                 intentId,
                 intent.intentType,
                 intent.user,
-                hubAsset,
+                intent.recipient,
+                intent.outputToken,
                 intent.amount,
+                intent.outputChainId,
                 relayerFee,
-                relayerAccount.address
+                intent.maxRelayerFee,
+                hubAsset
             ],
             account: relayerAccount
         });
-        await hubPublic.waitForTransactionReceipt({ hash: recordTx });
-        await enqueueProverAction({
-            kind: "withdraw",
-            intentId,
-            user: intent.user,
-            hubAsset,
-            amount: intent.amount.toString(),
-            fee: relayerFee.toString(),
-            relayer: relayerAccount.address
-        });
-        await updateIntentStatus(intentId, "awaiting_settlement", {
-            fillEvidenceTx: recordTx
-        });
+        await hubPublic.waitForTransactionReceipt({ hash: dispatchTx });
+        await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx });
         auditLog(req, "submit_ok", {
             intentId,
             intentType: intent.intentType,
             lockTx,
-            fillTx,
-            fillEvidenceTx: recordTx
+            dispatchTx
         });
         res.json({
             intentId,
-            status: "awaiting_settlement",
+            status: "locked",
             lockTx,
-            fillTx,
-            fillEvidenceTx: recordTx
+            dispatchTx
         });
     }
     catch (error) {
@@ -527,22 +461,23 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         || !hubFinalizer
         || !messageHash
         || !sourceTxHash) {
-        console.warn("Skipping borrow fill log with missing fields");
+        console.warn("Skipping outbound fill log with missing fields");
         return;
     }
     const intentType = Number(rawIntentType);
-    if (intentType !== IntentType.BORROW)
+    const outboundKind = toOutboundIntentKind(intentType);
+    if (!outboundKind)
         return;
     if (fee >= amount) {
-        console.warn(`Skipping borrow fill ${intentId} due to invalid fee`);
+        console.warn(`Skipping outbound fill ${intentId} due to invalid fee`);
         return;
     }
     if (destinationChainId !== spokeChainId) {
-        console.warn(`Skipping borrow fill ${intentId} due to chain mismatch`);
+        console.warn(`Skipping outbound fill ${intentId} due to chain mismatch`);
         return;
     }
     if (hubFinalizer.toLowerCase() !== acrossBorrowFinalizerAddress.toLowerCase()) {
-        console.warn(`Skipping borrow fill ${intentId} due to hub finalizer mismatch`);
+        console.warn(`Skipping outbound fill ${intentId} due to hub finalizer mismatch`);
         return;
     }
     const existing = await fetchIntent(intentId);
@@ -550,20 +485,20 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         return;
     }
     if (existing) {
-        if (existing.intentType !== IntentType.BORROW) {
-            console.warn(`Skipping borrow fill ${intentId} due to intent type mismatch`);
+        if (existing.intentType !== intentType) {
+            console.warn(`Skipping outbound fill ${intentId} due to intent type mismatch`);
             return;
         }
         if (existing.user.toLowerCase() !== user.toLowerCase()) {
-            console.warn(`Skipping borrow fill ${intentId} due to user mismatch`);
+            console.warn(`Skipping outbound fill ${intentId} due to user mismatch`);
             return;
         }
         if (existing.token.toLowerCase() !== spokeToken.toLowerCase()) {
-            console.warn(`Skipping borrow fill ${intentId} due to spoke token mismatch`);
+            console.warn(`Skipping outbound fill ${intentId} due to spoke token mismatch`);
             return;
         }
         if (existing.amount !== amount.toString()) {
-            console.warn(`Skipping borrow fill ${intentId} due to amount mismatch`);
+            console.warn(`Skipping outbound fill ${intentId} due to amount mismatch`);
             return;
         }
     }
@@ -571,7 +506,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
     const sourceBlockHash = asHexString(sourceBlock.hash);
     const sourceReceiptsRoot = asHexString(sourceBlock.receiptsRoot);
     if (!sourceBlockHash || !sourceReceiptsRoot) {
-        console.warn(`Skipping borrow fill ${intentId} due to missing source block hash/receipts root`);
+        console.warn(`Skipping outbound fill ${intentId} due to missing source block hash/receipts root`);
         return;
     }
     const witness = {
@@ -596,7 +531,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         sourceReceiver: spokeBorrowReceiverAddress
     };
     const finalizeTx = await attemptFinalizeBorrowFill(witness, sourceEvidence, intentId).catch((error) => {
-        console.warn(`Borrow fill finalization failed for intent ${intentId}: ${error.message}`);
+        console.warn(`Outbound fill finalization failed for intent ${intentId}: ${error.message}`);
         return undefined;
     });
     if (!finalizeTx)
@@ -609,7 +544,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         borrowFillFinalizeTx: finalizeTx
     });
     await enqueueProverAction({
-        kind: "borrow",
+        kind: outboundKind,
         intentId,
         user,
         hubAsset,
@@ -938,7 +873,7 @@ async function fetchBorrowFillProof(witness, sourceEvidence) {
     });
     const proof = asHexString(response?.proof);
     if (!proof) {
-        throw new Error("prover response missing borrow fill proof");
+        throw new Error("prover response missing outbound fill proof");
     }
     return proof;
 }
@@ -986,8 +921,9 @@ async function attemptFinalizeBorrowFill(witness, sourceEvidence, intentId) {
         account: relayerAccount
     });
     await hubPublic.waitForTransactionReceipt({ hash: finalizeTx });
-    auditLog(undefined, "borrow_fill_finalized", {
+    auditLog(undefined, "outbound_fill_finalized", {
         intentId,
+        intentType: witness.intentType,
         finalizeTx,
         sourceTxHash: witness.sourceTxHash,
         sourceLogIndex: witness.sourceLogIndex.toString()
@@ -1164,6 +1100,13 @@ function metadataBigInt(metadata, key) {
     catch {
         return undefined;
     }
+}
+function toOutboundIntentKind(intentType) {
+    if (intentType === IntentType.BORROW)
+        return "borrow";
+    if (intentType === IntentType.WITHDRAW)
+        return "withdraw";
+    return undefined;
 }
 function decodeAcrossDepositMessage(message) {
     try {

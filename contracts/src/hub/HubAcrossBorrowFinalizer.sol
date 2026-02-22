@@ -5,7 +5,7 @@ import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
 import {IBorrowFillProofVerifier} from "../interfaces/IBorrowFillProofVerifier.sol";
 import {HubSettlement} from "./HubSettlement.sol";
 
-/// @notice Hub-side proof-gated finalizer for Across borrow fills observed on spoke.
+/// @notice Hub-side proof-gated finalizer for Across outbound fills observed on spoke.
 contract HubAcrossBorrowFinalizer is AccessControl {
     bytes32 public constant FINALIZER_ADMIN_ROLE = keccak256("FINALIZER_ADMIN_ROLE");
 
@@ -71,8 +71,14 @@ contract HubAcrossBorrowFinalizer is AccessControl {
     }
 
     function _recordVerifiedFillEvidence(IBorrowFillProofVerifier.BorrowFillWitness calldata witness) internal {
-        settlement.recordVerifiedBorrowFillEvidence(
-            witness.intentId, witness.user, witness.hubAsset, witness.amount, witness.fee, witness.relayer
+        settlement.recordVerifiedFillEvidence(
+            witness.intentId,
+            witness.intentType,
+            witness.user,
+            witness.hubAsset,
+            witness.amount,
+            witness.fee,
+            witness.relayer
         );
     }
 

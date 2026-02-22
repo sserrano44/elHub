@@ -6,6 +6,7 @@ import {Pausable} from "@openzeppelin/security/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {Constants} from "../libraries/Constants.sol";
 
 interface IAcrossSpokePoolBorrowDispatcher {
     function depositV3(
@@ -40,6 +41,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
 
     struct BorrowDispatchMessage {
         bytes32 intentId;
+        uint8 intentType;
         address user;
         address recipient;
         address spokeToken;
@@ -71,6 +73,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
     event HubFinalizerSet(address indexed finalizer);
     event BorrowDispatchInitiated(
         bytes32 indexed intentId,
+        uint8 intentType,
         address indexed hubAsset,
         address indexed spokeToken,
         address spokePool,
@@ -93,6 +96,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
     error InvalidHubFinalizer(address finalizer);
     error InvalidFillDeadlineBuffer();
     error InvalidDestinationChainId(uint256 destinationChainId);
+    error InvalidIntentType(uint8 intentType);
     error TimestampOverflow();
 
     constructor(address owner_, address hubFinalizer_) Ownable(owner_) {
@@ -151,6 +155,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
 
     function dispatchBorrowFill(
         bytes32 intentId,
+        uint8 intentType,
         address user,
         address recipient,
         address outputToken,
@@ -166,6 +171,9 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
         returns (bytes32)
     {
         if (!allowedCaller[msg.sender]) revert UnauthorizedCaller(msg.sender);
+        if (intentType != Constants.INTENT_BORROW && intentType != Constants.INTENT_WITHDRAW) {
+            revert InvalidIntentType(intentType);
+        }
         if (user == address(0) || recipient == address(0)) revert InvalidSpokeReceiver(recipient);
         if (hubAsset == address(0)) revert InvalidHubAsset(hubAsset);
         if (outputChainId == 0) revert InvalidDestinationChainId(outputChainId);
@@ -189,7 +197,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
         uint32 fillDeadline = uint32(block.timestamp) + fillDeadlineBuffer;
 
         bytes memory acrossMessage = _encodeBorrowDispatchMessage(
-            intentId, user, recipient, route.spokeToken, hubAsset, amount, relayerFee, outputChainId, msg.sender
+            intentId, intentType, user, recipient, route.spokeToken, hubAsset, amount, relayerFee, outputChainId, msg.sender
         );
 
         IERC20(hubAsset).safeTransferFrom(msg.sender, address(this), amount);
@@ -215,6 +223,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
 
         emit BorrowDispatchInitiated(
             intentId,
+            intentType,
             hubAsset,
             route.spokeToken,
             route.spokePool,
@@ -237,6 +246,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
 
     function _encodeBorrowDispatchMessage(
         bytes32 intentId,
+        uint8 intentType,
         address user,
         address recipient,
         address spokeToken,
@@ -248,6 +258,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Pausable, ReentrancyGuard {
     ) internal view returns (bytes memory) {
         return abi.encode(
             intentId,
+            intentType,
             user,
             recipient,
             spokeToken,
