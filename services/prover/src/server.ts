@@ -33,8 +33,17 @@ import {
 
 type RequestWithMeta = express.Request & { rawBody?: string; requestId?: string };
 
+const NETWORKS = {
+  ethereum: { envPrefix: "ETHEREUM", defaultChainId: 1 },
+  base: { envPrefix: "BASE", defaultChainId: 8453 },
+  bsc: { envPrefix: "BSC", defaultChainId: 56 },
+  worldchain: { envPrefix: "WORLDCHAIN", defaultChainId: 480 }
+} as const;
+type NetworkName = keyof typeof NETWORKS;
+
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
+const isLiveMode = (process.env.LIVE_MODE ?? "0") !== "0";
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN ?? "*";
 const internalAuthSecret =
   process.env.INTERNAL_API_AUTH_SECRET
@@ -99,9 +108,21 @@ const apiRateMaxRequests = Number(process.env.API_RATE_MAX_REQUESTS ?? "1200");
 const internalRateWindowMs = Number(process.env.INTERNAL_API_RATE_WINDOW_MS ?? "60000");
 const internalRateMaxRequests = Number(process.env.INTERNAL_API_RATE_MAX_REQUESTS ?? "2400");
 
-const hubRpc = process.env.HUB_RPC_URL ?? "http://127.0.0.1:8545";
-const hubChainId = BigInt(process.env.HUB_CHAIN_ID ?? "8453");
-const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID ?? "480");
+const hubNetwork = normalizeNetwork(process.env.HUB_NETWORK ?? "ethereum");
+const spokeNetwork = resolveSpokeNetwork(process.env.SPOKE_NETWORKS ?? process.env.SPOKE_NETWORK ?? "base");
+const hubConfig = NETWORKS[hubNetwork];
+const spokeConfig = NETWORKS[spokeNetwork];
+const hubRpc = process.env.HUB_RPC_URL ?? resolveNetworkRpc(hubNetwork, "http://127.0.0.1:8545");
+const hubChainId = BigInt(
+  process.env.HUB_CHAIN_ID
+  ?? process.env[`${hubConfig.envPrefix}_CHAIN_ID`]
+  ?? String(hubConfig.defaultChainId)
+);
+const spokeChainId = BigInt(
+  process.env.SPOKE_CHAIN_ID
+  ?? process.env[`${spokeConfig.envPrefix}_CHAIN_ID`]
+  ?? String(spokeConfig.defaultChainId)
+);
 const settlementAddress = process.env.HUB_SETTLEMENT_ADDRESS as Address;
 const proverKey = process.env.PROVER_PRIVATE_KEY as `0x${string}`;
 const proverFunderKey = process.env.PROVER_FUNDER_PRIVATE_KEY as `0x${string}` | undefined;
@@ -142,6 +163,7 @@ if (internalAuthPreviousSecret.length > 0) {
 const actionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("supply"),
+    sourceChainId: z.string(),
     depositId: z.string(),
     user: z.string().startsWith("0x"),
     hubAsset: z.string().startsWith("0x"),
@@ -149,6 +171,7 @@ const actionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("repay"),
+    sourceChainId: z.string(),
     depositId: z.string(),
     user: z.string().startsWith("0x"),
     hubAsset: z.string().startsWith("0x"),
@@ -358,6 +381,7 @@ async function flushQueue() {
     for (const action of actions) {
       if (action.kind === "supply" || action.kind === "repay") {
         await postInternal(indexerUrl, "/internal/deposits/upsert", {
+          sourceChainId: Number(action.sourceChainId),
           depositId: Number(action.depositId),
           user: action.user,
           intentType: action.kind === "supply" ? 1 : 2,
@@ -473,8 +497,15 @@ async function ensureProverHasGas(reason: string) {
 
 function normalizeAction(input: z.infer<typeof actionSchema>): QueuedAction {
   if (input.kind === "supply" || input.kind === "repay") {
+    const sourceChainId = BigInt(input.sourceChainId);
+    if (sourceChainId !== spokeChainId) {
+      throw new Error(
+        `queued action sourceChainId mismatch: expected=${spokeChainId.toString()} got=${sourceChainId.toString()}`
+      );
+    }
     return {
       kind: input.kind,
+      sourceChainId,
       depositId: BigInt(input.depositId),
       user: input.user as Address,
       hubAsset: input.hubAsset as Address,
@@ -746,6 +777,33 @@ function parseNativeWei(value: string): bigint {
   return parseEther(normalized);
 }
 
+function normalizeNetwork(value: string): NetworkName {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "mainnet") return "ethereum";
+  if (normalized === "world") return "worldchain";
+  if (normalized === "bnb") return "bsc";
+  if (normalized in NETWORKS) return normalized as NetworkName;
+  throw new Error(`Unsupported network=${value}. Use one of: ${Object.keys(NETWORKS).join(", ")}`);
+}
+
+function resolveSpokeNetwork(value: string): NetworkName {
+  const first = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0);
+  return normalizeNetwork(first ?? "base");
+}
+
+function resolveNetworkRpc(network: NetworkName, fallback: string): string {
+  const config = NETWORKS[network];
+  const tenderly = process.env[`${config.envPrefix}_TENDERLY_RPC_URL`];
+  const rpc = process.env[`${config.envPrefix}_RPC_URL`];
+  if (isLiveMode && tenderly) {
+    throw new Error(`LIVE_MODE forbids ${config.envPrefix}_TENDERLY_RPC_URL`);
+  }
+  return rpc ?? tenderly ?? fallback;
+}
+
 function validateStartupConfig() {
   if (!internalAuthSecret) {
     throw new Error("Missing INTERNAL_API_AUTH_SECRET");
@@ -755,6 +813,17 @@ function validateStartupConfig() {
   }
   if (isProduction && corsAllowOrigin.trim() === "*") {
     throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in production");
+  }
+  if (isLiveMode) {
+    if (corsAllowOrigin.trim() === "*") {
+      throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in LIVE_MODE");
+    }
+    if (internalAuthSecret === "dev-internal-auth-secret") {
+      throw new Error("INTERNAL_API_AUTH_SECRET cannot use dev default in LIVE_MODE");
+    }
+    if ((process.env.PROVER_MODE ?? "dev") === "dev") {
+      throw new Error("PROVER_MODE=dev is forbidden in LIVE_MODE");
+    }
   }
   if (!internalServiceName) {
     throw new Error("INTERNAL_API_SERVICE_NAME cannot be empty");

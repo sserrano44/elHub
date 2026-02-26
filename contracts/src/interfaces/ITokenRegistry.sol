@@ -14,6 +14,8 @@ interface ITokenRegistry {
     }
 
     function getConfigByHub(address hubToken) external view returns (TokenConfig memory);
-    function getHubTokenBySpoke(address spokeToken) external view returns (address);
+    function getHubTokenBySpoke(uint256 sourceChainId, address spokeToken) external view returns (address);
+    function getSpokeTokenByHub(uint256 destinationChainId, address hubToken) external view returns (address);
+    function getSpokeDecimalsByHub(uint256 destinationChainId, address hubToken) external view returns (uint8);
     function getSupportedAssets() external view returns (address[] memory);
 }

@@ -14,41 +14,60 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   pnpm install
 fi
 
-HUB_CHAIN_ID="${HUB_CHAIN_ID:-1}"
+HUB_NETWORK="${HUB_NETWORK:-ethereum}"
 HUB_RPC_PORT="${HUB_RPC_PORT:-8545}"
 SPOKE_RPC_PORT="${SPOKE_RPC_PORT:-9545}"
-SPOKE_NETWORK="${SPOKE_NETWORK:-base}"
+SPOKE_NETWORKS="${SPOKE_NETWORKS:-${SPOKE_NETWORK:-base}}"
 
-normalize_spoke_network() {
+normalize_network() {
   local value
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
+    ethereum|mainnet) echo "ethereum" ;;
     base) echo "base" ;;
     bsc|bnb) echo "bsc" ;;
+    worldchain|world) echo "worldchain" ;;
     *)
-      echo "Unsupported SPOKE_NETWORK=$1 (expected: base, bsc)" >&2
+      echo "Unsupported network=$1 (expected: ethereum, base, bsc, worldchain)" >&2
       exit 1
       ;;
   esac
 }
 
-SPOKE_NETWORK="$(normalize_spoke_network "$SPOKE_NETWORK")"
-case "$SPOKE_NETWORK" in
-  base)
-    SPOKE_ENV_PREFIX="BASE"
-    SPOKE_LABEL="Base"
-    SPOKE_DEFAULT_CHAIN_ID=8453
-    ;;
-  bsc)
-    SPOKE_ENV_PREFIX="BSC"
-    SPOKE_LABEL="BSC"
-    SPOKE_DEFAULT_CHAIN_ID=56
-    ;;
-esac
+resolve_network_meta() {
+  local network="$1"
+  case "$network" in
+    ethereum)
+      echo "ETHEREUM Ethereum 1"
+      ;;
+    base)
+      echo "BASE Base 8453"
+      ;;
+    bsc)
+      echo "BSC BSC 56"
+      ;;
+    worldchain)
+      echo "WORLDCHAIN Worldchain 480"
+      ;;
+    *)
+      echo "Unsupported network=$network" >&2
+      exit 1
+      ;;
+  esac
+}
 
-SPOKE_CHAIN_VAR="SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID"
-SPOKE_RPC_VAR="SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL"
+HUB_NETWORK="$(normalize_network "$HUB_NETWORK")"
+read -r HUB_ENV_PREFIX HUB_LABEL HUB_DEFAULT_CHAIN_ID <<<"$(resolve_network_meta "$HUB_NETWORK")"
+HUB_CHAIN_VAR="${HUB_ENV_PREFIX}_CHAIN_ID"
+HUB_CHAIN_ID="${HUB_CHAIN_ID:-${!HUB_CHAIN_VAR:-$HUB_DEFAULT_CHAIN_ID}}"
+
+SPOKE_NETWORK="${SPOKE_NETWORKS%%,*}"
+SPOKE_NETWORK="$(normalize_network "$SPOKE_NETWORK")"
+read -r SPOKE_ENV_PREFIX SPOKE_LABEL SPOKE_DEFAULT_CHAIN_ID <<<"$(resolve_network_meta "$SPOKE_NETWORK")"
+SPOKE_CHAIN_VAR="${SPOKE_ENV_PREFIX}_CHAIN_ID"
 SPOKE_CHAIN_ID="${!SPOKE_CHAIN_VAR:-$SPOKE_DEFAULT_CHAIN_ID}"
+
+HUB_RPC_URL="http://127.0.0.1:${HUB_RPC_PORT}"
 SPOKE_RPC_URL="http://127.0.0.1:${SPOKE_RPC_PORT}"
 
 PIDS=()
@@ -61,8 +80,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting Ethereum-mainnet-local anvil on :${HUB_RPC_PORT}"
-anvil --port "$HUB_RPC_PORT" --chain-id "$HUB_CHAIN_ID" --block-time 1 >/tmp/elhub-anvil-ethereum.log 2>&1 &
+echo "Starting ${HUB_LABEL}-local anvil on :${HUB_RPC_PORT}"
+anvil --port "$HUB_RPC_PORT" --chain-id "$HUB_CHAIN_ID" --block-time 1 >/tmp/elhub-anvil-${HUB_NETWORK}.log 2>&1 &
 PIDS+=("$!")
 
 echo "Starting ${SPOKE_LABEL}-local anvil on :${SPOKE_RPC_PORT}"
@@ -84,10 +103,18 @@ for _ in {1..30}; do
 done
 
 export HUB_CHAIN_ID
-export HUB_RPC_URL="http://127.0.0.1:${HUB_RPC_PORT}"
+export HUB_NETWORK
+export HUB_RPC_URL
 export SPOKE_NETWORK
-export "${SPOKE_CHAIN_VAR}=${SPOKE_CHAIN_ID}"
-export "${SPOKE_RPC_VAR}=${SPOKE_RPC_URL}"
+export SPOKE_NETWORKS
+
+export "${HUB_ENV_PREFIX}_CHAIN_ID=${HUB_CHAIN_ID}"
+export "${HUB_ENV_PREFIX}_RPC_URL=${HUB_RPC_URL}"
+export "${HUB_ENV_PREFIX}_TENDERLY_RPC_URL=${HUB_RPC_URL}"
+
+export "${SPOKE_ENV_PREFIX}_CHAIN_ID=${SPOKE_CHAIN_ID}"
+export "${SPOKE_ENV_PREFIX}_RPC_URL=${SPOKE_RPC_URL}"
+export "${SPOKE_ENV_PREFIX}_TENDERLY_RPC_URL=${SPOKE_RPC_URL}"
 
 echo "Deploying local contracts"
 bash ./contracts/script/deploy-local.sh

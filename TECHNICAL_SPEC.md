@@ -15,10 +15,10 @@ Core goals:
 5. Support production ZK verifier mode without changing settlement interface.
 
 In-scope components:
-1. Solidity contracts under `/Users/sebas/projects/elhub/contracts/src`.
-2. Relayer, indexer, prover services under `/Users/sebas/projects/elhub/services`.
-3. Circuit and proving artifacts under `/Users/sebas/projects/elhub/circuits`.
-4. E2E/testing flows in `/Users/sebas/projects/elhub/scripts` and `/Users/sebas/projects/elhub/contracts/test`.
+1. Solidity contracts under `/Users/sebas/projects/hubris/contracts/src`.
+2. Relayer, indexer, prover services under `/Users/sebas/projects/hubris/services`.
+3. Circuit and proving artifacts under `/Users/sebas/projects/hubris/circuits`.
+4. E2E/testing flows in `/Users/sebas/projects/hubris/scripts` and `/Users/sebas/projects/hubris/contracts/test`.
 
 ## 2. Topology and Chains
 
@@ -41,7 +41,7 @@ Initial assets:
 3. `wARS` (18 decimals default)
 4. `wBRL` (18 decimals default)
 
-`TokenRegistry` (`/Users/sebas/projects/elhub/contracts/src/hub/TokenRegistry.sol`) stores:
+`TokenRegistry` (`/Users/sebas/projects/hubris/contracts/src/hub/TokenRegistry.sol`) stores:
 1. Hub token address.
 2. Spoke token address.
 3. Decimals.
@@ -51,7 +51,7 @@ Initial assets:
 
 ## 4. Core Data Structures
 
-Defined in `/Users/sebas/projects/elhub/contracts/src/libraries/DataTypes.sol`.
+Defined in `/Users/sebas/projects/hubris/contracts/src/libraries/DataTypes.sol`.
 
 ### 4.1 Intent
 ```
@@ -87,7 +87,7 @@ SettlementBatch {
 ## 5. Contract Specifications
 
 ### 5.1 HubMoneyMarket
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubMoneyMarket.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubMoneyMarket.sol`
 
 Responsibilities:
 1. Track per-asset supply/debt shares and indices.
@@ -112,7 +112,7 @@ Settlement entry points:
 4. `settlementFinalizeWithdraw(user, asset, amount, relayer, fee)`
 
 ### 5.2 HubRiskManager
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubRiskManager.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubRiskManager.sol`
 
 Responsibilities:
 1. Enforce supply/borrow caps and enabled assets.
@@ -131,7 +131,7 @@ Lock-aware behavior:
 2. Includes `reservedDebt` addition to debt.
 
 ### 5.3 HubIntentInbox
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubIntentInbox.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubIntentInbox.sol`
 
 Responsibilities:
 1. EIP-712 intent verification.
@@ -146,7 +146,7 @@ Nonce model:
 1. `nonceUsed[user][nonce]` boolean.
 
 ### 5.4 HubLockManager
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubLockManager.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubLockManager.sol`
 
 Responsibilities:
 1. Enforce mandatory lock before borrow/withdraw fill.
@@ -166,7 +166,7 @@ Reservation state:
 3. `reservedWithdraw[user][asset]`
 
 ### 5.5 HubCustody
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubCustody.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubCustody.sol`
 
 Responsibilities:
 1. Register bridged deposits (`CANONICAL_BRIDGE_RECEIVER_ROLE`).
@@ -174,7 +174,7 @@ Responsibilities:
 3. Enforce one-time consume semantics per `depositId`.
 
 ### 5.6 HubAcrossReceiver
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossReceiver.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubAcrossReceiver.sol`
 
 Responsibilities:
 1. Accept Across callback only from configured hub `SpokePool`.
@@ -186,7 +186,7 @@ Responsibilities:
    1. `sourceChainId + sourceTxHash + sourceLogIndex + depositId + messageHash`.
 
 ### 5.7 HubSettlement
-File: `/Users/sebas/projects/elhub/contracts/src/hub/HubSettlement.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/hub/HubSettlement.sol`
 
 Responsibilities:
 1. Verify proof and public inputs.
@@ -205,7 +205,7 @@ Batch max:
 1. `MAX_BATCH_ACTIONS = 50`
 
 ### 5.8 Verifier
-File: `/Users/sebas/projects/elhub/contracts/src/zk/Verifier.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/zk/Verifier.sol`
 
 Modes:
 1. Dev mode: `DEV_MODE=true`, proof accepted by hash match (`DEV_PROOF_HASH`).
@@ -215,7 +215,7 @@ Public input count:
 1. Configured immutable `PUBLIC_INPUT_COUNT` (current expected value `4`).
 
 ### 5.9 Groth16VerifierAdapter
-File: `/Users/sebas/projects/elhub/contracts/src/zk/Groth16VerifierAdapter.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/zk/Groth16VerifierAdapter.sol`
 
 Responsibilities:
 1. Decode generic `bytes proof` into `(uint256[2], uint256[2][2], uint256[2])`.
@@ -224,31 +224,20 @@ Responsibilities:
 4. Delegate to snarkjs-style generated verifier signature.
 
 ### 5.10 SpokePortal
-File: `/Users/sebas/projects/elhub/contracts/src/spoke/SpokePortal.sol`
+File: `/Users/sebas/projects/hubris/contracts/src/spoke/SpokePortal.sol`
 
 Responsibilities:
 1. Escrow inbound supply/repay and invoke bridge adapter.
-2. Execute outbound fill for borrow/withdraw.
-3. Prevent double-fill by `intentId`.
 
 Events:
 1. `SupplyInitiated`
 2. `RepayInitiated`
-3. `BorrowFilled`
-4. `WithdrawFilled`
 
 ### 5.11 Bridge Adapters
 Files:
-1. `/Users/sebas/projects/elhub/contracts/src/spoke/CanonicalBridgeAdapter.sol`
-2. `/Users/sebas/projects/elhub/contracts/src/spoke/AcrossBridgeAdapter.sol`
-3. `/Users/sebas/projects/elhub/contracts/src/spoke/MockBridgeAdapter.sol`
-4. `/Users/sebas/projects/elhub/contracts/src/mocks/MockAcrossSpokePool.sol`
-
-Canonical adapter:
-1. Per-token route config.
-2. Caller allowlist.
-3. Pause support.
-4. Bridges via configured canonical bridge contract.
+1. `/Users/sebas/projects/hubris/contracts/src/spoke/AcrossBridgeAdapter.sol`
+2. `/Users/sebas/projects/hubris/contracts/src/spoke/MockBridgeAdapter.sol`
+3. `/Users/sebas/projects/hubris/contracts/src/mocks/MockAcrossSpokePool.sol`
 
 Across adapter:
 1. Per-token Across route config (`spokePool`, `hubToken`, relayer/deadline fields).
@@ -262,11 +251,11 @@ Mock adapter:
 
 ### 5.12 Across Borrow Fulfillment Path
 Files:
-1. `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossBorrowDispatcher.sol`
-2. `/Users/sebas/projects/elhub/contracts/src/spoke/SpokeAcrossBorrowReceiver.sol`
-3. `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossBorrowFinalizer.sol`
-4. `/Users/sebas/projects/elhub/contracts/src/zk/BorrowFillProofVerifier.sol`
-5. `/Users/sebas/projects/elhub/contracts/src/zk/AcrossBorrowFillProofBackend.sol`
+1. `/Users/sebas/projects/hubris/contracts/src/hub/HubAcrossBorrowDispatcher.sol`
+2. `/Users/sebas/projects/hubris/contracts/src/spoke/SpokeAcrossBorrowReceiver.sol`
+3. `/Users/sebas/projects/hubris/contracts/src/hub/HubAcrossBorrowFinalizer.sol`
+4. `/Users/sebas/projects/hubris/contracts/src/zk/BorrowFillProofVerifier.sol`
+5. `/Users/sebas/projects/hubris/contracts/src/zk/AcrossBorrowFillProofBackend.sol`
 
 Responsibilities:
 1. `HubAcrossBorrowDispatcher` sends hub-funded borrow fills over Across to spoke receiver with deterministic message binding.
@@ -303,13 +292,15 @@ Responsibilities:
 7. Prover batches finalize action.
 8. Settlement consumes lock, updates hub accounting, reimburses relayer.
 
-### 6.3 Withdraw (Base accounting -> Worldchain payout)
+### 6.3 Withdraw (Base accounting -> Worldchain payout via Across)
 1. User signs EIP-712 intent.
 2. Relayer calls `HubLockManager.lock`.
-3. Relayer fills withdraw directly on spoke (`SpokePortal.fillWithdraw`).
-4. Relayer records fill evidence in settlement.
-5. Prover batches finalize action.
-6. Settlement consumes lock, updates hub accounting, reimburses relayer.
+3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`.
+5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
+6. Finalizer verifies proof and records fill evidence in settlement.
+7. Prover batches finalize action.
+8. Settlement consumes lock, updates hub accounting, reimburses relayer.
 
 ### 6.4 Indexer intent statuses
 1. `initiated`
@@ -359,7 +350,7 @@ Current public inputs passed on-chain:
 4. `actionsRoot` (field reduced)
 
 ### 7.4 Circuit
-File: `/Users/sebas/projects/elhub/circuits/circom/SettlementBatchRoot.circom`
+File: `/Users/sebas/projects/hubris/circuits/circom/SettlementBatchRoot.circom`
 
 Public signals:
 1. `batchId`
@@ -377,7 +368,7 @@ Current limitation:
 ## 8. Off-Chain Service Specifications
 
 ### 8.1 Relayer service
-File: `/Users/sebas/projects/elhub/services/relayer/src/server.ts`
+File: `/Users/sebas/projects/hubris/services/relayer/src/server.ts`
 
 Public endpoints:
 1. `GET /health`
@@ -396,12 +387,13 @@ Behavior:
    5. enqueue prover action
 5. For withdraw submit:
    1. lock on hub
-   2. fill on spoke (`SpokePortal.fillWithdraw`)
-   3. record fill evidence on hub settlement
-   4. enqueue prover action
+   2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher` (`intentType=WITHDRAW`)
+   3. observe spoke `BorrowFillRecorded`
+   4. finalize proof on hub via `HubAcrossBorrowFinalizer`
+   5. enqueue prover action
 
 ### 8.2 Indexer service
-File: `/Users/sebas/projects/elhub/services/indexer/src/server.ts`
+File: `/Users/sebas/projects/hubris/services/indexer/src/server.ts`
 
 Public endpoints:
 1. `GET /health`
@@ -418,7 +410,7 @@ Persistence:
 1. JSON file store (`services/indexer/src/store.ts`), not yet production DB.
 
 ### 8.3 Prover service
-File: `/Users/sebas/projects/elhub/services/prover/src/server.ts`
+File: `/Users/sebas/projects/hubris/services/prover/src/server.ts`
 
 Public endpoint:
 1. `GET /health`
@@ -456,12 +448,16 @@ Additional controls:
 ## 9. Deployment Specification
 
 Primary script:
-1. `/Users/sebas/projects/elhub/contracts/script/deploy-local.mjs`
+1. `/Users/sebas/projects/hubris/contracts/script/deploy-local.mjs`
+2. `/Users/sebas/projects/hubris/contracts/script/deploy-live-multi.mjs` (live mode, Base hub + multi-spoke)
 
 Outputs:
-1. `/Users/sebas/projects/elhub/contracts/deployments/local.json`
-2. `/Users/sebas/projects/elhub/contracts/deployments/local.env`
-3. `/Users/sebas/projects/elhub/apps/web/public/deployments/local.json`
+1. `/Users/sebas/projects/hubris/contracts/deployments/local.json`
+2. `/Users/sebas/projects/hubris/contracts/deployments/local.env`
+3. `/Users/sebas/projects/hubris/apps/web/public/deployments/local.json`
+4. `/Users/sebas/projects/hubris/contracts/deployments/live-<hub>-hub-<spokes>.json`
+5. `/Users/sebas/projects/hubris/contracts/deployments/live-<hub>-<spokes>.manifest.json`
+6. `/Users/sebas/projects/hubris/contracts/deployments/live_deployed_contracts.log`
 
 Verifier deployment modes:
 1. `HUB_VERIFIER_DEV_MODE=1`:
@@ -474,7 +470,7 @@ Verifier deployment modes:
 ## 10. E2E and Test Specifications
 
 ### 10.1 Contract test suites
-Location: `/Users/sebas/projects/elhub/contracts/test`
+Location: `/Users/sebas/projects/hubris/contracts/test`
 
 Coverage includes:
 1. Interest and share-accounting invariants.
@@ -488,19 +484,19 @@ Coverage includes:
 
 ### 10.2 Scripted fork E2E (dev proof)
 Script:
-1. `/Users/sebas/projects/elhub/scripts/e2e-fork.mjs`
+1. `/Users/sebas/projects/hubris/scripts/e2e-fork.mjs`
 
 Command:
 1. `pnpm test:e2e:fork`
 
 RPC resolution order:
-1. process env (`HUB_RPC_URL`, `SPOKE_NETWORK`, `SPOKE_<NETWORK>_RPC_URL`)
+1. process env (`HUB_NETWORK`, `SPOKE_NETWORKS`, `<NETWORK>_TENDERLY_RPC_URL`, `<NETWORK>_RPC_URL`)
 2. `.env` with the same keys
-3. localhost defaults (`8545/8546`) for local worldchain flow
+3. localhost defaults (`8545/8546`) for local flows
 
 ### 10.3 Base -> Mainnet-Hub supply-only E2E
 Script:
-1. `/Users/sebas/projects/elhub/scripts/e2e-base-mainnet-supply.mjs`
+1. `/Users/sebas/projects/hubris/scripts/e2e-base-mainnet-supply.mjs`
 
 Command:
 1. `pnpm test:e2e:base-mainnet-supply`
@@ -514,10 +510,29 @@ Checks:
 Commands:
 1. `pnpm test:e2e:base-mainnet-supply` (supply-only inbound lifecycle)
 2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
-3. `pnpm test:e2e` (runs both active E2E commands)
+3. `pnpm test:e2e:live:base-world-bsc` (manual real-RPC live scenario: Base hub + Worldchain/BSC spokes)
+4. `pnpm test:e2e` (runs local/fork active E2E commands)
 
 Note:
-1. Circuit-mode E2E wrappers were removed because deposit proof generation is not yet circuit-compatible end-to-end for the new pending-fill finalization path.
+1. Live E2E is an opt-in manual gate and must run with production verifier addresses configured.
+
+### 10.5 Live E2E (real RPC, real Across)
+Script:
+1. `/Users/sebas/projects/hubris/scripts/e2e-live-base-world-bsc.mjs`
+
+Command:
+1. `pnpm test:e2e:live:base-world-bsc`
+
+Expected behavior:
+1. Worldchain USDC supply reaches `pending_fill` then `bridged` then `settled`.
+2. Worldchain ETH->WETH supply reaches `pending_fill` then `bridged` then `settled`.
+3. BSC borrow dispatch emits Across source deposit on hub, destination fill on BSC, proof finalization on hub, then settlement to `settled`.
+
+Operational constraints:
+1. `LIVE_MODE=1` rejects any Tenderly RPC URL usage.
+2. No relay simulation path is allowed in live mode.
+3. `E2E_LIVE_SKIP_DEPLOY=1` is only valid when existing live deployment artifacts are present.
+4. Script defaults to `PROVER_MODE=circuit` and requires production verifier contracts to be wired.
 
 ## 11. Security and Safety Requirements
 
@@ -545,4 +560,4 @@ The remaining blockers are:
    3. prove amount/fee constraint validity
 2. Ship production deposit proof backend (light-client/ZK) with full source-event validity constraints.
 3. Complete P0-4 durable persistence migration from JSON to transactional DB + outbox.
-4. Execute P1 and P2 workstreams as defined in `/Users/sebas/projects/elhub/PRODUCTION_READINESS_PLAN.md`.
+4. Execute P1 and P2 workstreams as defined in `/Users/sebas/projects/hubris/PRODUCTION_READINESS_PLAN.md`.

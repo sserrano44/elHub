@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IBorrowFillProofVerifier} from "../interfaces/IBorrowFillProofVerifier.sol";
 import {ILightClientVerifier} from "../interfaces/ILightClientVerifier.sol";
 import {IAcrossBorrowFillEventVerifier} from "../interfaces/IAcrossBorrowFillEventVerifier.sol";
@@ -10,7 +12,7 @@ import {Constants} from "../libraries/Constants.sol";
 
 /// @notice Canonical source-event backend for outbound fill proofs (borrow/withdraw).
 /// @dev Verifies spoke finality + spoke BorrowFillRecorded inclusion and binds the proof to hub finalizer destination.
-contract AcrossBorrowFillProofBackend is Ownable, IAcrossBorrowFillProofBackend {
+contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable, IAcrossBorrowFillProofBackend {
     ILightClientVerifier public immutable lightClientVerifier;
     IAcrossBorrowFillEventVerifier public immutable eventVerifier;
 
@@ -30,7 +32,15 @@ contract AcrossBorrowFillProofBackend is Ownable, IAcrossBorrowFillProofBackend 
         if (address(eventVerifier_) == address(0)) revert InvalidVerifier(address(eventVerifier_));
         lightClientVerifier = lightClientVerifier_;
         eventVerifier = eventVerifier_;
+        _disableInitializers();
     }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setSourceReceiver(uint256 sourceChainId, address receiver) external onlyOwner {
         if (sourceChainId == 0 || receiver == address(0)) {

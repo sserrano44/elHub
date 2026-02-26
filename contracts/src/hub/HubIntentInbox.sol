@@ -2,12 +2,14 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {EIP712} from "@openzeppelin/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/utils/cryptography/ECDSA.sol";
 import {DataTypes} from "../libraries/DataTypes.sol";
 import {IntentHasher} from "../libraries/IntentHasher.sol";
 
-contract HubIntentInbox is Ownable, EIP712 {
+contract HubIntentInbox is Ownable, Initializable, UUPSUpgradeable, EIP712 {
     mapping(address => mapping(uint256 => bool)) public nonceUsed;
     mapping(address => bool) public isConsumer;
 
@@ -37,7 +39,16 @@ contract HubIntentInbox is Ownable, EIP712 {
         _;
     }
 
-    constructor(address owner_) Ownable(owner_) EIP712("ElHubIntentInbox", "1") {}
+    constructor(address owner_) Ownable(owner_) EIP712("ElHubIntentInbox", "1") {
+        _disableInitializers();
+    }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setConsumer(address consumer, bool allowed) external onlyOwner {
         isConsumer[consumer] = allowed;

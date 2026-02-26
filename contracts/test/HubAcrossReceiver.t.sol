@@ -15,6 +15,7 @@ import {IDepositProofVerifier} from "../src/interfaces/IDepositProofVerifier.sol
 import {IAcrossDepositProofBackend} from "../src/interfaces/IAcrossDepositProofBackend.sol";
 
 contract HubAcrossReceiverTest is TestBase {
+    uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
     uint256 internal constant SOURCE_CHAIN_ID = 8453;
     uint256 internal constant SOURCE_BLOCK_NUMBER = 12345;
 
@@ -244,7 +245,7 @@ contract HubAcrossReceiverTest is TestBase {
             inclusionProof: inclusionProof
         });
 
-        return abi.encode(canonical);
+        return abi.encode(CANONICAL_PROOF_SCHEMA_VERSION, abi.encode(canonical));
     }
 
     function _encodeMessage(uint256 depositId, uint8 intentType, address user, uint256 amount)

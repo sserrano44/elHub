@@ -3,10 +3,8 @@ pragma solidity ^0.8.24;
 
 import {TestBase} from "./utils/TestBase.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
-import {MockCanonicalTokenBridge} from "../src/mocks/MockCanonicalTokenBridge.sol";
 import {MockAcrossSpokePool} from "../src/mocks/MockAcrossSpokePool.sol";
 import {SpokePortal} from "../src/spoke/SpokePortal.sol";
-import {CanonicalBridgeAdapter} from "../src/spoke/CanonicalBridgeAdapter.sol";
 import {AcrossBridgeAdapter} from "../src/spoke/AcrossBridgeAdapter.sol";
 import {Verifier} from "../src/zk/Verifier.sol";
 import {Groth16VerifierAdapter} from "../src/zk/Groth16VerifierAdapter.sol";
@@ -48,54 +46,6 @@ contract ProductionBridgeAndVerifierTest is TestBase {
 
     function setUp() external {
         user = vm.addr(0xA11CE);
-    }
-
-    function test_canonicalBridgeAdapter_bridgesThroughConfiguredRoute() external {
-        MockERC20 localToken = new MockERC20("Local USDC", "USDC", 6);
-        MockERC20 remoteToken = new MockERC20("Remote USDC", "USDC", 6);
-        MockCanonicalTokenBridge bridge = new MockCanonicalTokenBridge();
-
-        SpokePortal portal = new SpokePortal(address(this), 8453);
-        CanonicalBridgeAdapter adapter = new CanonicalBridgeAdapter(address(this));
-
-        adapter.setAllowedCaller(address(portal), true);
-        adapter.setRoute(address(localToken), address(bridge), address(remoteToken), 300_000, true);
-        portal.setBridgeAdapter(address(adapter));
-        portal.setHubRecipient(address(0xBEEF));
-
-        uint256 amount = 50e6;
-        localToken.mint(user, amount);
-
-        vm.prank(user);
-        localToken.approve(address(portal), amount);
-
-        vm.prank(user);
-        uint256 depositId = portal.initiateSupply(address(localToken), amount, user);
-
-        assertEq(depositId, 1, "first deposit id should be 1");
-        assertEq(localToken.balanceOf(address(bridge)), amount, "bridge should receive escrowed tokens");
-        assertEq(bridge.lastLocalToken(), address(localToken), "bridge local token should match");
-        assertEq(bridge.lastRemoteToken(), address(remoteToken), "bridge remote token should match");
-        assertEq(bridge.lastRecipient(), address(0xBEEF), "hub recipient should match");
-        assertEq(bridge.lastAmount(), amount, "amount should match");
-        assertEq(uint256(bridge.lastMinGasLimit()), 300_000, "min gas limit should match route");
-        assertEq(bridge.lastCaller(), address(adapter), "adapter should call canonical bridge");
-    }
-
-    function test_canonicalBridgeAdapter_rejectsUnauthorizedCallerAndMissingRoute() external {
-        MockERC20 localToken = new MockERC20("Local USDC", "USDC", 6);
-        CanonicalBridgeAdapter adapter = new CanonicalBridgeAdapter(address(this));
-
-        localToken.mint(address(this), 1e6);
-        localToken.approve(address(adapter), 1e6);
-
-        vm.expectRevert(abi.encodeWithSelector(CanonicalBridgeAdapter.UnauthorizedCaller.selector, address(this)));
-        adapter.bridgeToHub(address(localToken), 1e6, address(0xBEEF), bytes("x"));
-
-        adapter.setAllowedCaller(address(this), true);
-
-        vm.expectRevert(abi.encodeWithSelector(CanonicalBridgeAdapter.RouteNotEnabled.selector, address(localToken)));
-        adapter.bridgeToHub(address(localToken), 1e6, address(0xBEEF), bytes("x"));
     }
 
     function test_acrossBridgeAdapter_bridgesThroughConfiguredRoute() external {

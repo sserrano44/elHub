@@ -19,6 +19,7 @@ function makeIntent(partial) {
 }
 function makeDeposit(partial) {
     return {
+        sourceChainId: 8453,
         depositId: 42,
         user: "0x1111111111111111111111111111111111111111",
         intentType: IntentType.SUPPLY,
@@ -91,7 +92,7 @@ function runSharedStoreContract(name, createStore) {
             relayTx: "0x1234",
             bridgeTx: "0x5678"
         });
-        const fromGet = store.getDeposit(42);
+        const fromGet = store.getDeposit(8453, 42);
         assert.ok(fromGet);
         assert.equal(fromGet.status, "bridged");
     });

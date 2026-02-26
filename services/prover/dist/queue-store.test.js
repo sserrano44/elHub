@@ -10,6 +10,7 @@ function createTmpDir(prefix) {
 function makeSupplyAction(partial) {
     return {
         kind: "supply",
+        sourceChainId: 8453n,
         depositId: 1n,
         user: "0x1111111111111111111111111111111111111111",
         hubAsset: "0x2222222222222222222222222222222222222222",
@@ -35,14 +36,16 @@ function runQueueStoreContract(name, createStore) {
         assert.equal(store.getNextBatchId(9n), 9n);
         assert.equal(store.enqueue(makeSupplyAction()), "enqueued");
         assert.equal(store.enqueue(makeSupplyAction()), "duplicate");
+        assert.equal(store.enqueue(makeSupplyAction({ sourceChainId: 56n })), "enqueued");
         assert.equal(store.enqueue(makeBorrowAction({
             intentId: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         })), "enqueued");
-        assert.equal(store.getQueuedCount(), 2);
+        assert.equal(store.getQueuedCount(), 3);
         const records = store.peek(10);
-        assert.equal(records.length, 2);
+        assert.equal(records.length, 3);
         assert.equal(records[0]?.action.kind, "supply");
-        assert.equal(records[1]?.action.kind, "borrow");
+        assert.equal(records[1]?.action.kind, "supply");
+        assert.equal(records[2]?.action.kind, "borrow");
     });
     test(`${name}: markSettled removes actions and updates batch cursor`, () => {
         const store = createStore();

@@ -2,11 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Constants} from "../libraries/Constants.sol";
 import {MulDiv} from "../libraries/MulDiv.sol";
 import {IInterestRateModel} from "../interfaces/IInterestRateModel.sol";
 
-contract KinkInterestRateModel is Ownable, IInterestRateModel {
+contract KinkInterestRateModel is Ownable, Initializable, UUPSUpgradeable, IInterestRateModel {
     struct RateConfig {
         uint256 baseRatePerSecondRay;
         uint256 slope1PerSecondRay;
@@ -40,7 +42,32 @@ contract KinkInterestRateModel is Ownable, IInterestRateModel {
         });
         _validateConfig(config);
         defaultConfig = config;
+        _disableInitializers();
     }
+
+    function initializeProxy(
+        address admin,
+        uint256 baseRatePerSecondRay,
+        uint256 slope1PerSecondRay,
+        uint256 slope2PerSecondRay,
+        uint256 kinkUtilizationRay,
+        uint256 reserveFactorRay
+    ) external initializer {
+        if (admin == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(admin);
+
+        RateConfig memory config = RateConfig({
+            baseRatePerSecondRay: baseRatePerSecondRay,
+            slope1PerSecondRay: slope1PerSecondRay,
+            slope2PerSecondRay: slope2PerSecondRay,
+            kinkUtilizationRay: kinkUtilizationRay,
+            reserveFactorRay: reserveFactorRay
+        });
+        _validateConfig(config);
+        defaultConfig = config;
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setDefaultConfig(RateConfig calldata config) external onlyOwner {
         _validateConfig(config);

@@ -8,9 +8,12 @@ import {Constants} from "../libraries/Constants.sol";
 /// @notice Verifies canonical source-event outbound fill proofs (borrow/withdraw).
 /// @dev Proof includes source finality and source receiver event inclusion payloads.
 contract BorrowFillProofVerifier is IBorrowFillProofVerifier {
+    uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
+
     IAcrossBorrowFillProofBackend public immutable backend;
 
     error InvalidBackend(address backend);
+    error UnsupportedProofVersion(uint8 version);
 
     constructor(IAcrossBorrowFillProofBackend backend_) {
         if (address(backend_) == address(0)) revert InvalidBackend(address(backend_));
@@ -59,7 +62,9 @@ contract BorrowFillProofVerifier is IBorrowFillProofVerifier {
         pure
         returns (IAcrossBorrowFillProofBackend.CanonicalSourceProof memory decoded)
     {
-        decoded = abi.decode(proof, (IAcrossBorrowFillProofBackend.CanonicalSourceProof));
+        (uint8 version, bytes memory payload) = abi.decode(proof, (uint8, bytes));
+        if (version != CANONICAL_PROOF_SCHEMA_VERSION) revert UnsupportedProofVersion(version);
+        decoded = abi.decode(payload, (IAcrossBorrowFillProofBackend.CanonicalSourceProof));
     }
 
     function _isSupportedIntentType(uint8 intentType) internal pure returns (bool) {

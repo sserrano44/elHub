@@ -51,7 +51,7 @@ pnpm dev
 
 `pnpm dev` runs:
 1. Ethereum-mainnet-local anvil (`:8545`, chain id `1`)
-2. Spoke-local anvil (`:9545`, chain id `8453` for `SPOKE_NETWORK=base`, `56` for `SPOKE_NETWORK=bsc`)
+2. Spoke-local anvil (`:9545`, chain id `8453` for `SPOKE_NETWORKS=base`, `56` for `SPOKE_NETWORKS=bsc`)
 3. Hub + spoke deployments (`contracts/script/deploy-local.sh`)
 4. ABI generation (`packages/abis`)
 5. `indexer`, `prover`, `relayer`, and `web` apps
@@ -81,12 +81,11 @@ pnpm dev
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
 
 ### Spoke (Base / BSC)
-- `SpokePortal`: supply/repay initiation (escrow + bridge call) and fill execution for borrow/withdraw.
+- `SpokePortal`: supply/repay initiation (escrow + bridge call).
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
 - `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and local callback simulation in E2E harnesses.
 - `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that transfers borrow proceeds and emits proof-bound source event.
-- `CanonicalBridgeAdapter`: production adapter with allowlisted callers and per-token canonical routes.
 
 ## End-to-end lifecycle
 
@@ -112,10 +111,12 @@ pnpm dev
 ### Withdraw
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
-3. Relayer fills user on spoke (`SpokePortal.fillWithdraw`).
-4. Relayer records fill evidence on hub settlement.
-5. Prover batches finalize actions and settles.
-6. Settlement consumes lock, updates accounting, reimburses relayer on hub.
+3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded`.
+5. Relayer/prover submit withdraw fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
+6. Finalizer records proof-verified withdraw fill evidence in settlement.
+7. Prover batches finalize actions and settles.
+8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
 
 ## Testing
 
@@ -167,34 +168,15 @@ Notes:
   - full lifecycle: borrow -> repay -> withdraw collateral
   - liquidation when ETH price drops below safe collateralization
 
-### Cross-chain fork E2E test (hub fork + selected spoke, lock/fill/settle)
-
-With hub fork on `:8545` and spoke fork on `:8546`:
-
-```bash
-cd contracts
-RUN_FORK_TESTS=1 \
-# BASE_FORK_URL is the legacy env key used by this Forge test for hub fork RPC.
-BASE_FORK_URL=http://127.0.0.1:8545 \
-SPOKE_NETWORK=bsc \
-SPOKE_BSC_RPC_URL=http://127.0.0.1:8546 \
-forge test --match-contract ForkCrossChainE2ETest -vv
-```
-
-This test executes:
-1. supply ETH collateral on hub market
-2. sign + lock borrow intent on hub
-3. fill borrow on selected spoke
-4. settle batch on hub and verify debt + relayer reimbursement + lock consumption
-
 ### Fork E2E (Ethereum hub + selected spoke forks)
 
 If you run a hub fork on `:8545` and spoke fork on `:8546`, execute:
 
 ```bash
-HUB_RPC_URL=http://127.0.0.1:8545 \
-SPOKE_NETWORK=base \
-SPOKE_BASE_RPC_URL=http://127.0.0.1:8546 \
+HUB_NETWORK=ethereum \
+SPOKE_NETWORKS=base \
+ETHEREUM_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
+BASE_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
 pnpm test:e2e:fork
 ```
 
@@ -208,15 +190,12 @@ The E2E runner will:
 Notes:
 1. `scripts/e2e-fork.mjs` now reads `.env` automatically.
 2. RPC resolution order:
-   1. explicit process env (`HUB_RPC_URL`, `SPOKE_NETWORK`, `SPOKE_<NETWORK>_RPC_URL`)
+   1. explicit process env (`HUB_NETWORK`, `SPOKE_NETWORKS`, `<NETWORK>_TENDERLY_RPC_URL`, `<NETWORK>_RPC_URL`)
    2. `.env` with the same keys
-   3. base local fallback (`http://127.0.0.1:8546`) only when `SPOKE_NETWORK=base`
-3. This allows switching spokes by changing `SPOKE_NETWORK` plus one spoke RPC variable.
-4. When RPCs are Tenderly, `scripts/e2e-fork.mjs` can fund deployer/relayer/bridge/prover with `tenderly_setBalance` (Admin RPC).
-5. Optional Tenderly Admin RPC envs:
-   1. `HUB_ADMIN_RPC_URL` (falls back to `HUB_RPC_URL`)
-   2. `SPOKE_<NETWORK>_ADMIN_RPC_URL` (falls back to `SPOKE_<NETWORK>_RPC_URL`)
-6. Funding knobs:
+   3. local fallbacks (`http://127.0.0.1:8545` hub, `http://127.0.0.1:8546` spoke)
+3. `scripts/e2e-fork.mjs` uses the first entry in `SPOKE_NETWORKS` as the active spoke.
+4. When RPCs are Tenderly, `scripts/e2e-fork.mjs` can fund deployer/relayer/bridge/prover with `tenderly_setBalance`.
+5. Funding knobs:
    1. `E2E_USE_TENDERLY_FUNDING` (default `1`)
    2. `E2E_MIN_DEPLOYER_GAS_ETH` (default `2`)
    3. `E2E_MIN_OPERATOR_GAS_ETH` (default `0.05`)
@@ -226,9 +205,10 @@ Notes:
 To run only the inbound supply path (Base spoke -> mainnet hub semantics, `HUB_CHAIN_ID=1`):
 
 ```bash
-HUB_RPC_URL=http://127.0.0.1:8545 \
-SPOKE_NETWORK=base \
-SPOKE_BASE_RPC_URL=http://127.0.0.1:8546 \
+HUB_NETWORK=ethereum \
+SPOKE_NETWORKS=base \
+ETHEREUM_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
+BASE_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
 pnpm test:e2e:base-mainnet-supply
 ```
 
@@ -239,14 +219,42 @@ This wrapper runs `scripts/e2e-fork.mjs` with `E2E_SUPPLY_ONLY=1` and asserts:
 
 For local/fork tests only, the script simulates the destination relay callback with `MockAcrossSpokePool.relayV3Deposit`; production relayer runtime no longer performs this relay simulation.
 
+### Live E2E (Base hub + Worldchain/BSC spokes, real RPCs)
+
+This run executes against live chain RPCs (no Tenderly vnets) and validates real Across processing:
+
+```bash
+HUB_NETWORK=base \
+SPOKE_NETWORKS=worldchain,bsc \
+BASE_RPC_URL=<base-mainnet-rpc> \
+WORLDCHAIN_RPC_URL=<worldchain-mainnet-rpc> \
+BSC_RPC_URL=<bsc-mainnet-rpc> \
+HUB_GROTH16_VERIFIER_ADDRESS=<groth16-verifier-on-base> \
+HUB_LIGHT_CLIENT_VERIFIER_ADDRESS=<light-client-verifier-on-base> \
+HUB_ACROSS_DEPOSIT_EVENT_VERIFIER_ADDRESS=<deposit-event-verifier-on-base> \
+HUB_ACROSS_BORROW_FILL_EVENT_VERIFIER_ADDRESS=<borrow-fill-event-verifier-on-base> \
+pnpm test:e2e:live:base-world-bsc
+```
+
+Rerun without redeploying:
+
+```bash
+E2E_LIVE_SKIP_DEPLOY=1 pnpm test:e2e:live:base-world-bsc
+```
+
+Notes:
+1. `scripts/e2e-live-base-world-bsc.mjs` hard-fails if any configured RPC URL is Tenderly in `LIVE_MODE=1`.
+2. The live runner never calls relay simulation paths (`simulateAcrossRelay` / `MockAcrossSpokePool.relayV3Deposit`).
+3. Deployment artifacts are written under `contracts/deployments/live-*.{json,env}` for local reuse; do not commit the generated `live-*.env`.
+4. UUPS deployment state is tracked in `contracts/deployments/live-base-world-bsc.manifest.json` and action logs in `contracts/deployments/live_deployed_contracts.log`.
+
 ### E2E command set
 
 Active E2E commands:
 1. `pnpm test:e2e:base-mainnet-supply` (smoke path for inbound supply lifecycle)
 2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
-3. `pnpm test:e2e` (runs both active E2E commands)
-
-Circuit-mode E2E wrappers were removed because the current deposit-proof path is not yet circuit-compatible end-to-end. They should be reintroduced only after canonical light-client/ZK deposit proof constraints are implemented.
+3. `pnpm test:e2e:live:base-world-bsc` (Base hub + Worldchain/BSC live scenario on real RPCs)
+4. `pnpm test:e2e` (runs both local/fork active E2E commands)
 
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`
@@ -294,10 +302,6 @@ After local deploy:
   - `ChainlinkPriceOracle` rejects stale rounds (`block.timestamp - updatedAt > heartbeat`), non-positive answers, and invalid rounds.
   - Feed decimals are normalized to protocol-wide `e8`.
   - Keep heartbeat and bounds conservative per asset and chain.
-- Configure `CanonicalBridgeAdapter`:
-  - `setAllowedCaller(<SpokePortal>, true)`
-  - `setRoute(localToken, canonicalBridge, remoteToken, minGasLimit, true)` per token
-  - `SpokePortal.setBridgeAdapter(<CanonicalBridgeAdapter>)`
 - Configure `AcrossBridgeAdapter` (recommended inbound transport path):
   - `setAllowedCaller(<SpokePortal>, true)`
   - `setRoute(localToken, acrossSpokePool, hubToken, exclusiveRelayer, fillDeadlineBuffer, true)` per token
@@ -317,10 +321,10 @@ After local deploy:
   - request proof from prover and call `finalizePendingDeposit`
   - do not call `relayV3Deposit` in production runtime
 - Relayer borrow behavior:
-  - lock intent on hub and dispatch borrow via `HubAcrossBorrowDispatcher`
+  - lock intent on hub and dispatch borrow/withdraw via `HubAcrossBorrowDispatcher`
   - observe spoke `BorrowFillRecorded`
   - request proof from prover and call `HubAcrossBorrowFinalizer.finalizeBorrowFill`
-  - do not call direct spoke `fillBorrow` in production runtime
+  - do not use any direct spoke fill function in production runtime
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
   - deploy generated verifier (from `snarkjs zkey export solidityverifier`)
   - deploy `Groth16VerifierAdapter(owner, generatedVerifier)`
@@ -334,7 +338,7 @@ After local deploy:
 - Borrow/withdraw requires hub-side lock and reservation before spoke fill.
 - Settlement batch replay is blocked by `batchId` replay protection.
 - Intent finalization replay blocked via lock consumption + settled intent tracking.
-- Spoke double-fills blocked by `filledIntent` mapping.
+- Spoke double-fills blocked by `SpokeAcrossBorrowReceiver.intentFilled`.
 - `DEV_MODE` verifier does not provide production cryptographic guarantees.
 - Local Across flow still uses mocked SpokePools; production must use real Across contracts and a production-grade light-client/ZK deposit proof backend.
 

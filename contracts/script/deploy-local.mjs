@@ -12,7 +12,8 @@ import {
   parseEther,
   parseUnits,
   isAddress,
-  formatEther
+  formatEther,
+  encodeFunctionData
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -23,18 +24,36 @@ const contractsDir = path.resolve(rootDir, "contracts");
 const outDir = path.resolve(contractsDir, "out");
 const deploymentsDir = path.resolve(contractsDir, "deployments");
 
-const SPOKE_NETWORK_DEFAULTS = {
-  base: { label: "Base", chainId: 8453, rpcUrl: "http://127.0.0.1:9545" },
-  bsc: { label: "BSC", chainId: 56, rpcUrl: "" }
+const NETWORK_DEFAULTS = {
+  ethereum: { label: "Ethereum", envPrefix: "ETHEREUM", chainId: 1, rpcUrl: "http://127.0.0.1:8545" },
+  base: { label: "Base", envPrefix: "BASE", chainId: 8453, rpcUrl: "http://127.0.0.1:9545" },
+  bsc: { label: "BSC", envPrefix: "BSC", chainId: 56, rpcUrl: "" },
+  worldchain: { label: "Worldchain", envPrefix: "WORLDCHAIN", chainId: 480, rpcUrl: "" }
 };
 
-const HUB_RPC_URL = process.env.HUB_RPC_URL ?? "http://127.0.0.1:8545";
-const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? 1);
-const SPOKE_NETWORK = normalizeSpokeNetwork(process.env.SPOKE_NETWORK ?? "base");
+const HUB_NETWORK = normalizeNetwork(process.env.HUB_NETWORK ?? "ethereum");
+const HUB_NETWORK_CONFIG = NETWORK_DEFAULTS[HUB_NETWORK];
+const HUB_ENV_PREFIX = HUB_NETWORK_CONFIG.envPrefix;
+const HUB_RPC_URL =
+  process.env.HUB_RPC_URL
+  ?? process.env[`${HUB_ENV_PREFIX}_TENDERLY_RPC_URL`]
+  ?? process.env[`${HUB_ENV_PREFIX}_RPC_URL`]
+  ?? HUB_NETWORK_CONFIG.rpcUrl;
+const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? process.env[`${HUB_ENV_PREFIX}_CHAIN_ID`] ?? HUB_NETWORK_CONFIG.chainId);
+const SPOKE_NETWORKS = String(process.env.SPOKE_NETWORKS ?? process.env.SPOKE_NETWORK ?? "base");
+const SPOKE_NETWORK = normalizeNetwork(SPOKE_NETWORKS.split(",")[0]?.trim() || "base");
 const SPOKE_ENV_PREFIX = SPOKE_NETWORK.toUpperCase();
-const SPOKE_NETWORK_CONFIG = SPOKE_NETWORK_DEFAULTS[SPOKE_NETWORK];
-const SPOKE_CHAIN_ID = Number(process.env[`SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID`] ?? SPOKE_NETWORK_CONFIG.chainId);
-const SPOKE_RPC_URL = process.env[`SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL`] ?? SPOKE_NETWORK_CONFIG.rpcUrl;
+const SPOKE_NETWORK_CONFIG = NETWORK_DEFAULTS[SPOKE_NETWORK];
+const SPOKE_CHAIN_ID = Number(
+  process.env[`${SPOKE_ENV_PREFIX}_CHAIN_ID`]
+  ?? process.env[`SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID`]
+  ?? SPOKE_NETWORK_CONFIG.chainId
+);
+const SPOKE_RPC_URL =
+  process.env[`${SPOKE_ENV_PREFIX}_TENDERLY_RPC_URL`]
+  ?? process.env[`${SPOKE_ENV_PREFIX}_RPC_URL`]
+  ?? process.env[`SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL`]
+  ?? SPOKE_NETWORK_CONFIG.rpcUrl;
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
 const HUB_VERIFIER_DEV_MODE = (process.env.HUB_VERIFIER_DEV_MODE ?? "1") !== "0";
@@ -44,12 +63,12 @@ const INTERNAL_API_AUTH_SECRET = process.env.INTERNAL_API_AUTH_SECRET ?? "dev-in
 
 if (!Number.isInteger(SPOKE_CHAIN_ID) || SPOKE_CHAIN_ID <= 0) {
   throw new Error(
-    `Invalid SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID for SPOKE_NETWORK=${SPOKE_NETWORK}: ${SPOKE_CHAIN_ID}`
+    `Invalid ${SPOKE_ENV_PREFIX}_CHAIN_ID for SPOKE_NETWORK=${SPOKE_NETWORK}: ${SPOKE_CHAIN_ID}`
   );
 }
 if (!SPOKE_RPC_URL) {
   throw new Error(
-    `Missing SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL for SPOKE_NETWORK=${SPOKE_NETWORK}`
+    `Missing ${SPOKE_ENV_PREFIX}_TENDERLY_RPC_URL or ${SPOKE_ENV_PREFIX}_RPC_URL for SPOKE_NETWORK=${SPOKE_NETWORK}`
   );
 }
 if (isProduction && HUB_VERIFIER_DEV_MODE) {
@@ -58,11 +77,9 @@ if (isProduction && HUB_VERIFIER_DEV_MODE) {
 
 const DEPLOYER_PRIVATE_KEY =
   process.env.DEPLOYER_PRIVATE_KEY ?? "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const RELAYER_PRIVATE_KEY =
-  process.env.RELAYER_PRIVATE_KEY ?? "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
-const BRIDGE_PRIVATE_KEY =
-  process.env.BRIDGE_PRIVATE_KEY ?? "0x5de4111afa1a4b94908f83103d4f246ca3459d3f1477e0d4cbf95f2f8d1f7cd8";
-const PROVER_PRIVATE_KEY = process.env.PROVER_PRIVATE_KEY ?? RELAYER_PRIVATE_KEY;
+const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY ?? DEPLOYER_PRIVATE_KEY;
+const BRIDGE_PRIVATE_KEY = process.env.BRIDGE_PRIVATE_KEY ?? DEPLOYER_PRIVATE_KEY;
+const PROVER_PRIVATE_KEY = process.env.PROVER_PRIVATE_KEY ?? DEPLOYER_PRIVATE_KEY;
 
 const deployer = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 const relayer = privateKeyToAccount(RELAYER_PRIVATE_KEY);
@@ -111,6 +128,18 @@ async function deploy(client, publicClient, contractName, args = []) {
     throw new Error(`Deployment failed for ${contractName}`);
   }
   return receipt.contractAddress;
+}
+
+async function deployUUPS(client, publicClient, contractName, implementationArgs, initArgs = []) {
+  const implementation = await deploy(client, publicClient, contractName, implementationArgs);
+  const { abi } = loadArtifact(contractName);
+  const data = encodeFunctionData({
+    abi,
+    functionName: "initializeProxy",
+    args: initArgs
+  });
+  const proxy = await deploy(client, publicClient, "UUPSProxy", [implementation, data]);
+  return { implementation, proxy, abi };
 }
 
 async function write(client, publicClient, { address, abi, functionName, args }) {
@@ -189,41 +218,98 @@ async function main() {
   const spokeWars = await deploy(spokeWallet, spokePublic, "MockERC20", ["Wrapped ARS", "wARS", 18]);
   const spokeWbrl = await deploy(spokeWallet, spokePublic, "MockERC20", ["Wrapped BRL", "wBRL", 18]);
 
-  console.log("Deploying hub protocol...");
-  const tokenRegistry = await deploy(hubWallet, hubPublic, "TokenRegistry", [deployer.address]);
+  console.log("Deploying hub protocol (UUPS proxies)...");
+  const tokenRegistryDeployment = await deployUUPS(
+    hubWallet,
+    hubPublic,
+    "TokenRegistry",
+    [deployer.address],
+    [deployer.address]
+  );
+  const tokenRegistry = tokenRegistryDeployment.proxy;
   const oracle = await deploy(hubWallet, hubPublic, "MockOracle", [deployer.address]);
-  const rateModel = await deploy(hubWallet, hubPublic, "KinkInterestRateModel", [
+  const rateModelDeployment = await deployUUPS(
+    hubWallet,
+    hubPublic,
+    "KinkInterestRateModel",
+    [
+      deployer.address,
+      3_170_979_198_000_000_000n,
+      6_341_958_396_000_000_000n,
+      19_025_875_190_000_000_000n,
+      800_000_000_000_000_000_000_000_000n,
+      100_000_000_000_000_000_000_000_000n
+    ],
+    [
+      deployer.address,
+      3_170_979_198_000_000_000n,
+      6_341_958_396_000_000_000n,
+      19_025_875_190_000_000_000n,
+      800_000_000_000_000_000_000_000_000n,
+      100_000_000_000_000_000_000_000_000n
+    ]
+  );
+  const rateModel = rateModelDeployment.proxy;
+  const moneyMarketDeployment = await deployUUPS(hubWallet, hubPublic, "HubMoneyMarket", [
     deployer.address,
-    3_170_979_198_000_000_000n,
-    6_341_958_396_000_000_000n,
-    19_025_875_190_000_000_000n,
-    800_000_000_000_000_000_000_000_000n,
-    100_000_000_000_000_000_000_000_000n
-  ]);
-  const moneyMarket = await deploy(hubWallet, hubPublic, "HubMoneyMarket", [deployer.address, tokenRegistry, rateModel]);
-  const riskManager = await deploy(hubWallet, hubPublic, "HubRiskManager", [deployer.address, tokenRegistry, moneyMarket, oracle]);
-  const intentInbox = await deploy(hubWallet, hubPublic, "HubIntentInbox", [deployer.address]);
-  const lockManager = await deploy(hubWallet, hubPublic, "HubLockManager", [
+    tokenRegistry,
+    rateModel
+  ], [deployer.address]);
+  const moneyMarket = moneyMarketDeployment.proxy;
+  const riskManagerDeployment = await deployUUPS(hubWallet, hubPublic, "HubRiskManager", [
+    deployer.address,
+    tokenRegistry,
+    moneyMarket,
+    oracle
+  ], [deployer.address]);
+  const riskManager = riskManagerDeployment.proxy;
+  const intentInboxDeployment = await deployUUPS(
+    hubWallet,
+    hubPublic,
+    "HubIntentInbox",
+    [deployer.address],
+    [deployer.address]
+  );
+  const intentInbox = intentInboxDeployment.proxy;
+  const lockManagerDeployment = await deployUUPS(hubWallet, hubPublic, "HubLockManager", [
     deployer.address,
     intentInbox,
     tokenRegistry,
     riskManager,
     moneyMarket
-  ]);
-  const custody = await deploy(hubWallet, hubPublic, "HubCustody", [deployer.address]);
+  ], [deployer.address]);
+  const lockManager = lockManagerDeployment.proxy;
+  const custodyDeployment = await deployUUPS(
+    hubWallet,
+    hubPublic,
+    "HubCustody",
+    [deployer.address],
+    [deployer.address]
+  );
+  const custody = custodyDeployment.proxy;
 
   let groth16Verifier = ZERO_ADDRESS;
   let groth16VerifierAdapter = ZERO_ADDRESS;
+  let groth16VerifierAdapterImplementation = ZERO_ADDRESS;
+  let verifierImplementation = ZERO_ADDRESS;
   let verifier;
 
   if (HUB_VERIFIER_DEV_MODE) {
-    verifier = await deploy(hubWallet, hubPublic, "Verifier", [
-      deployer.address,
-      true,
-      keccak256(stringToHex(HUB_DEV_PROOF_TEXT)),
-      ZERO_ADDRESS,
-      4n
-    ]);
+    const verifierDeployment = await deployUUPS(
+      hubWallet,
+      hubPublic,
+      "Verifier",
+      [
+        deployer.address,
+        true,
+        keccak256(stringToHex(HUB_DEV_PROOF_TEXT)),
+        ZERO_ADDRESS,
+        4n
+      ],
+      [deployer.address, ZERO_ADDRESS]
+    );
+    verifier = verifierDeployment.proxy;
+    verifierImplementation = verifierDeployment.implementation;
   } else {
     if (!isAddress(HUB_GROTH16_VERIFIER_ADDRESS) || HUB_GROTH16_VERIFIER_ADDRESS === ZERO_ADDRESS) {
       throw new Error("HUB_GROTH16_VERIFIER_ADDRESS must be set to deployed generated verifier when HUB_VERIFIER_DEV_MODE=0");
@@ -231,67 +317,95 @@ async function main() {
 
     await ensureContractCode(hubPublic, HUB_GROTH16_VERIFIER_ADDRESS, "HUB_GROTH16_VERIFIER_ADDRESS");
     groth16Verifier = HUB_GROTH16_VERIFIER_ADDRESS;
-    groth16VerifierAdapter = await deploy(hubWallet, hubPublic, "Groth16VerifierAdapter", [
-      deployer.address,
-      groth16Verifier
-    ]);
+    const groth16VerifierAdapterDeployment = await deployUUPS(
+      hubWallet,
+      hubPublic,
+      "Groth16VerifierAdapter",
+      [deployer.address, groth16Verifier],
+      [deployer.address, groth16Verifier]
+    );
+    groth16VerifierAdapter = groth16VerifierAdapterDeployment.proxy;
+    groth16VerifierAdapterImplementation = groth16VerifierAdapterDeployment.implementation;
 
-    verifier = await deploy(hubWallet, hubPublic, "Verifier", [
-      deployer.address,
-      false,
-      "0x0000000000000000000000000000000000000000000000000000000000000000",
-      groth16VerifierAdapter,
-      4n
-    ]);
+    const verifierDeployment = await deployUUPS(
+      hubWallet,
+      hubPublic,
+      "Verifier",
+      [
+        deployer.address,
+        false,
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        groth16VerifierAdapter,
+        4n
+      ],
+      [deployer.address, groth16VerifierAdapter]
+    );
+    verifier = verifierDeployment.proxy;
+    verifierImplementation = verifierDeployment.implementation;
   }
 
-  const settlement = await deploy(hubWallet, hubPublic, "HubSettlement", [
+  const settlementDeployment = await deployUUPS(hubWallet, hubPublic, "HubSettlement", [
     deployer.address,
     verifier,
     moneyMarket,
     custody,
     lockManager
-  ]);
+  ], [deployer.address, verifier, moneyMarket, custody, lockManager]);
+  const settlement = settlementDeployment.proxy;
   const lightClientVerifier = await deploy(hubWallet, hubPublic, "MockLightClientVerifier", []);
   const acrossDepositEventVerifier = await deploy(hubWallet, hubPublic, "MockAcrossDepositEventVerifier", []);
-  const depositProofBackend = await deploy(hubWallet, hubPublic, "AcrossDepositProofBackend", [
+  const depositProofBackendDeployment = await deployUUPS(hubWallet, hubPublic, "AcrossDepositProofBackend", [
     deployer.address,
     lightClientVerifier,
     acrossDepositEventVerifier
-  ]);
+  ], [deployer.address]);
+  const depositProofBackend = depositProofBackendDeployment.proxy;
   const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifier", [depositProofBackend]);
   const acrossBorrowFillEventVerifier = await deploy(hubWallet, hubPublic, "MockAcrossBorrowFillEventVerifier", []);
-  const borrowFillProofBackend = await deploy(hubWallet, hubPublic, "AcrossBorrowFillProofBackend", [
+  const borrowFillProofBackendDeployment = await deployUUPS(hubWallet, hubPublic, "AcrossBorrowFillProofBackend", [
     deployer.address,
     lightClientVerifier,
     acrossBorrowFillEventVerifier
-  ]);
+  ], [deployer.address]);
+  const borrowFillProofBackend = borrowFillProofBackendDeployment.proxy;
   const borrowFillProofVerifier = await deploy(hubWallet, hubPublic, "BorrowFillProofVerifier", [borrowFillProofBackend]);
-  const hubAcrossBorrowFinalizer = await deploy(hubWallet, hubPublic, "HubAcrossBorrowFinalizer", [
+  const hubAcrossBorrowFinalizerDeployment = await deployUUPS(hubWallet, hubPublic, "HubAcrossBorrowFinalizer", [
     deployer.address,
     settlement,
     borrowFillProofVerifier
-  ]);
-  const hubAcrossBorrowDispatcher = await deploy(hubWallet, hubPublic, "HubAcrossBorrowDispatcher", [
+  ], [deployer.address, borrowFillProofVerifier]);
+  const hubAcrossBorrowFinalizer = hubAcrossBorrowFinalizerDeployment.proxy;
+  const hubAcrossBorrowDispatcherDeployment = await deployUUPS(hubWallet, hubPublic, "HubAcrossBorrowDispatcher", [
     deployer.address,
     hubAcrossBorrowFinalizer
-  ]);
+  ], [deployer.address, hubAcrossBorrowFinalizer]);
+  const hubAcrossBorrowDispatcher = hubAcrossBorrowDispatcherDeployment.proxy;
   const hubAcrossSpokePool = await deploy(hubWallet, hubPublic, "MockAcrossSpokePool", []);
-  const hubAcrossReceiver = await deploy(hubWallet, hubPublic, "HubAcrossReceiver", [
+  const hubAcrossReceiverDeployment = await deployUUPS(hubWallet, hubPublic, "HubAcrossReceiver", [
     deployer.address,
     custody,
     depositProofVerifier,
     hubAcrossSpokePool
-  ]);
+  ], [deployer.address, depositProofVerifier, hubAcrossSpokePool]);
+  const hubAcrossReceiver = hubAcrossReceiverDeployment.proxy;
 
-  console.log("Deploying spoke protocol...");
-  const spokePortal = await deploy(spokeWallet, spokePublic, "SpokePortal", [deployer.address, BigInt(HUB_CHAIN_ID)]);
+  console.log("Deploying spoke protocol (UUPS proxies)...");
+  const spokePortalDeployment = await deployUUPS(spokeWallet, spokePublic, "SpokePortal", [deployer.address, BigInt(HUB_CHAIN_ID)], [deployer.address]);
+  const spokePortal = spokePortalDeployment.proxy;
   const spokeAcrossSpokePool = await deploy(spokeWallet, spokePublic, "MockAcrossSpokePool", []);
-  const spokeBorrowReceiver = await deploy(spokeWallet, spokePublic, "SpokeAcrossBorrowReceiver", [
+  const spokeBorrowReceiverDeployment = await deployUUPS(spokeWallet, spokePublic, "SpokeAcrossBorrowReceiver", [
     deployer.address,
     spokeAcrossSpokePool
-  ]);
-  const spokeBridgeAdapter = await deploy(spokeWallet, spokePublic, "AcrossBridgeAdapter", [deployer.address, BigInt(HUB_CHAIN_ID)]);
+  ], [deployer.address, spokeAcrossSpokePool]);
+  const spokeBorrowReceiver = spokeBorrowReceiverDeployment.proxy;
+  const spokeBridgeAdapterDeployment = await deployUUPS(
+    spokeWallet,
+    spokePublic,
+    "AcrossBridgeAdapter",
+    [deployer.address, BigInt(HUB_CHAIN_ID)],
+    [deployer.address]
+  );
+  const spokeBridgeAdapter = spokeBridgeAdapterDeployment.proxy;
 
   const tokenRegistryAbi = loadArtifact("TokenRegistry").abi;
   const riskAbi = loadArtifact("HubRiskManager").abi;
@@ -482,6 +596,30 @@ async function main() {
   }
 
   const deploymentJson = {
+    implementations: {
+      hub: {
+        tokenRegistry: tokenRegistryDeployment.implementation,
+        rateModel: rateModelDeployment.implementation,
+        moneyMarket: moneyMarketDeployment.implementation,
+        riskManager: riskManagerDeployment.implementation,
+        intentInbox: intentInboxDeployment.implementation,
+        lockManager: lockManagerDeployment.implementation,
+        custody: custodyDeployment.implementation,
+        hubAcrossReceiver: hubAcrossReceiverDeployment.implementation,
+        depositProofBackend: depositProofBackendDeployment.implementation,
+        borrowFillProofBackend: borrowFillProofBackendDeployment.implementation,
+        hubAcrossBorrowFinalizer: hubAcrossBorrowFinalizerDeployment.implementation,
+        hubAcrossBorrowDispatcher: hubAcrossBorrowDispatcherDeployment.implementation,
+        groth16VerifierAdapter: groth16VerifierAdapterImplementation,
+        verifier: verifierImplementation,
+        settlement: settlementDeployment.implementation
+      },
+      spoke: {
+        portal: spokePortalDeployment.implementation,
+        bridgeAdapter: spokeBridgeAdapterDeployment.implementation,
+        borrowReceiver: spokeBorrowReceiverDeployment.implementation
+      }
+    },
     hub: {
       chainId: HUB_CHAIN_ID,
       tokenRegistry,
@@ -537,11 +675,19 @@ async function main() {
 
   fs.writeFileSync(path.join(deploymentsDir, "local.json"), JSON.stringify(deploymentJson, null, 2));
 
-  const localEnv = `HUB_RPC_URL=${HUB_RPC_URL}
+  const localEnv = `HUB_NETWORK=${HUB_NETWORK}
+SPOKE_NETWORKS=${SPOKE_NETWORK}
+HUB_RPC_URL=${HUB_RPC_URL}
 SPOKE_RPC_URL=${SPOKE_RPC_URL}
 HUB_CHAIN_ID=${HUB_CHAIN_ID}
 SPOKE_CHAIN_ID=${SPOKE_CHAIN_ID}
 SPOKE_NETWORK=${SPOKE_NETWORK}
+${HUB_ENV_PREFIX}_CHAIN_ID=${HUB_CHAIN_ID}
+${HUB_ENV_PREFIX}_RPC_URL=${HUB_RPC_URL}
+${HUB_ENV_PREFIX}_TENDERLY_RPC_URL=${HUB_RPC_URL}
+${SPOKE_ENV_PREFIX}_CHAIN_ID=${SPOKE_CHAIN_ID}
+${SPOKE_ENV_PREFIX}_RPC_URL=${SPOKE_RPC_URL}
+${SPOKE_ENV_PREFIX}_TENDERLY_RPC_URL=${SPOKE_RPC_URL}
 SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL=${SPOKE_RPC_URL}
 SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID=${SPOKE_CHAIN_ID}
 
@@ -602,12 +748,14 @@ main().catch((error) => {
   process.exit(1);
 });
 
-function normalizeSpokeNetwork(value) {
+function normalizeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
+  if (normalized === "mainnet") return "ethereum";
   if (normalized === "bnb") return "bsc";
-  if (normalized in SPOKE_NETWORK_DEFAULTS) return normalized;
+  if (normalized === "world") return "worldchain";
+  if (normalized in NETWORK_DEFAULTS) return normalized;
 
   throw new Error(
-    `Unsupported SPOKE_NETWORK=${value}. Use one of: ${Object.keys(SPOKE_NETWORK_DEFAULTS).join(", ")}`
+    `Unsupported network=${value}. Use one of: ${Object.keys(NETWORK_DEFAULTS).join(", ")}`
   );
 }

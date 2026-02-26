@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { IntentLifecycle, IntentStatus } from "@elhub/sdk";
 
 export type DepositState = {
+  sourceChainId: number;
   depositId: number;
   user: `0x${string}`;
   intentType: number;
@@ -34,7 +35,7 @@ export interface IndexerStore {
   getIntent(intentId: string): IntentLifecycle | null;
   listIntents(user?: string): IntentLifecycle[];
   upsertDeposit(dep: DepositInput): DepositState;
-  getDeposit(depositId: number): DepositState | null;
+  getDeposit(sourceChainId: number, depositId: number): DepositState | null;
 }
 
 export class JsonIndexerStore implements IndexerStore {
@@ -93,23 +94,32 @@ export class JsonIndexerStore implements IndexerStore {
   }
 
   upsertDeposit(dep: DepositInput): DepositState {
-    const current = this.state.deposits[String(dep.depositId)];
+    const sourceChainId = dep.sourceChainId ?? 0;
+    const current = this.state.deposits[depositKey(sourceChainId, dep.depositId)];
     const merged: DepositState = {
       ...current,
       ...dep,
+      sourceChainId,
       metadata: {
         ...(current?.metadata ?? {}),
         ...(dep.metadata ?? {})
       },
       updatedAt: new Date().toISOString()
     };
-    this.state.deposits[String(dep.depositId)] = merged;
+    this.state.deposits[depositKey(sourceChainId, dep.depositId)] = merged;
     this.save();
     return merged;
   }
 
-  getDeposit(depositId: number): DepositState | null {
-    return this.state.deposits[String(depositId)] ?? null;
+  getDeposit(sourceChainId: number, depositId: number): DepositState | null {
+    const exact = this.state.deposits[depositKey(sourceChainId, depositId)];
+    if (exact) return exact;
+    if (sourceChainId === 0) {
+      const suffix = `:${depositId}`;
+      const matchKey = Object.keys(this.state.deposits).find((key) => key.endsWith(suffix));
+      if (matchKey) return this.state.deposits[matchKey] ?? null;
+    }
+    return null;
   }
 
   private load(): IndexerDb {
@@ -155,12 +165,14 @@ export class SqliteIndexerStore implements IndexerStore {
       );
       CREATE INDEX IF NOT EXISTS idx_intents_updated_at ON intents(updated_at DESC);
 
-      CREATE TABLE IF NOT EXISTS deposits (
-        deposit_id INTEGER PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS deposits_v2 (
+        source_chain_id INTEGER NOT NULL,
+        deposit_id INTEGER NOT NULL,
         payload_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_chain_id, deposit_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_deposits_updated_at ON deposits(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_deposits_v2_updated_at ON deposits_v2(updated_at DESC);
     `);
   }
 
@@ -236,10 +248,12 @@ export class SqliteIndexerStore implements IndexerStore {
   }
 
   upsertDeposit(dep: DepositInput): DepositState {
-    const current = this.getDeposit(dep.depositId);
+    const sourceChainId = dep.sourceChainId ?? 0;
+    const current = this.getDeposit(sourceChainId, dep.depositId);
     const merged: DepositState = {
       ...current,
       ...dep,
+      sourceChainId,
       metadata: {
         ...(current?.metadata ?? {}),
         ...(dep.metadata ?? {})
@@ -249,23 +263,32 @@ export class SqliteIndexerStore implements IndexerStore {
 
     this.db.prepare(
       `
-      INSERT INTO deposits (deposit_id, payload_json, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(deposit_id) DO UPDATE SET
+      INSERT INTO deposits_v2 (source_chain_id, deposit_id, payload_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(source_chain_id, deposit_id) DO UPDATE SET
         payload_json = excluded.payload_json,
         updated_at = excluded.updated_at
       `
-    ).run(merged.depositId, JSON.stringify(merged), merged.updatedAt);
+    ).run(sourceChainId, merged.depositId, JSON.stringify(merged), merged.updatedAt);
     return merged;
   }
 
-  getDeposit(depositId: number): DepositState | null {
-    const row = this.db.prepare(
-      "SELECT payload_json FROM deposits WHERE deposit_id = ?"
-    ).get(depositId) as SqliteDepositRow | undefined;
+  getDeposit(sourceChainId: number, depositId: number): DepositState | null {
+    let row = this.db.prepare(
+      "SELECT payload_json FROM deposits_v2 WHERE source_chain_id = ? AND deposit_id = ?"
+    ).get(sourceChainId, depositId) as SqliteDepositRow | undefined;
+    if (!row && sourceChainId === 0) {
+      row = this.db.prepare(
+        "SELECT payload_json FROM deposits_v2 WHERE deposit_id = ? ORDER BY updated_at DESC LIMIT 1"
+      ).get(depositId) as SqliteDepositRow | undefined;
+    }
     if (!row) return null;
     return safeJsonParse<DepositState>(row.payload_json);
   }
+}
+
+function depositKey(sourceChainId: number, depositId: number): string {
+  return `${sourceChainId}:${depositId}`;
 }
 
 function safeJsonParse<T>(value: string): T | null {

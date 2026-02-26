@@ -10,15 +10,18 @@
     "test": "turbo run test",
     "test:e2e:fork": "node ./scripts/e2e-fork.mjs",
     "test:e2e:base-mainnet-supply": "node ./scripts/e2e-base-mainnet-supply.mjs",
+    "test:e2e:live:base-world-bsc": "node ./scripts/e2e-live-base-world-bsc.mjs",
     "test:e2e": "pnpm test:e2e:base-mainnet-supply && pnpm test:e2e:fork",
     "format": "turbo run format",
     "contracts:test": "cd contracts && forge test -vvv",
     "contracts:build": "cd contracts && forge build",
     "contracts:deploy:local": "bash ./contracts/script/deploy-local.sh",
+    "contracts:deploy:live:multi": "node ./contracts/script/deploy-live-multi.mjs",
     "abis:generate": "pnpm --filter @elhub/abis run generate",
-    "deployer:address": "node --env-file=.env -e \"const{privateKeyToAccount}=require('viem/accounts');console.log(privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).address)\""
+    "addresses": "node --env-file=.env -e \"const{privateKeyToAccount}=require('viem/accounts');Object.entries(process.env).filter(([k])=>k.endsWith('_PRIVATE_KEY')).forEach(([k,v])=>{try{console.log(k.replace('_PRIVATE_KEY','')+': '+privateKeyToAccount(v).address)}catch{}})\""
   },
   "devDependencies": {
+    "@openzeppelin/contracts": "5.0.2",
     "turbo": "^2.1.3",
     "typescript": "^5.6.3",
     "viem": "^2.23.2"

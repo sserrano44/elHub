@@ -26,23 +26,29 @@ const rootDir = path.resolve(__dirname, "..");
 const contractsDir = path.join(rootDir, "contracts");
 const dotEnv = loadDotEnv(path.join(rootDir, ".env"));
 
-const SPOKE_NETWORKS = {
+const NETWORKS = {
+  ethereum: { envPrefix: "ETHEREUM", label: "Ethereum", defaultChainId: 1 },
   base: { envPrefix: "BASE", label: "Base", defaultChainId: 8453 },
-  bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 }
+  bsc: { envPrefix: "BSC", label: "BSC", defaultChainId: 56 },
+  worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 }
 };
 
-const HUB_RPC_URL = resolveEnvValue("HUB_RPC_URL", "http://127.0.0.1:8545");
-const HUB_ADMIN_RPC_URL = resolveEnvValue("HUB_ADMIN_RPC_URL", HUB_RPC_URL);
-const HUB_CHAIN_ID = Number(resolveEnvValue("HUB_CHAIN_ID", "1"));
+const HUB_NETWORK = normalizeNetwork(resolveEnvValue("HUB_NETWORK", "ethereum"));
+const HUB_CONFIG = NETWORKS[HUB_NETWORK];
+const HUB_CHAIN_ID = Number(
+  resolveEnvValue("HUB_CHAIN_ID", resolveEnvValue(`${HUB_CONFIG.envPrefix}_CHAIN_ID`, String(HUB_CONFIG.defaultChainId)))
+);
+const HUB_RPC_URL = resolveNetworkRpc(HUB_NETWORK, "http://127.0.0.1:8545");
 const SPOKE = resolveSpokeConfig("http://127.0.0.1:8546");
 const SPOKE_NETWORK = SPOKE.network;
 const SPOKE_LABEL = SPOKE.label;
 const SPOKE_CHAIN_ID = SPOKE.chainId;
 const SPOKE_RPC_URL = SPOKE.rpcUrl;
-const SPOKE_ADMIN_RPC_URL = SPOKE.adminRpcUrl;
 const SPOKE_CHAIN_KEY = SPOKE.chainKey;
 const SPOKE_RPC_KEY = SPOKE.rpcKey;
-const SPOKE_ADMIN_RPC_KEY = SPOKE.adminRpcKey;
+const SPOKE_TENDERLY_RPC_KEY = SPOKE.tenderlyRpcKey;
+const SPOKE_LEGACY_CHAIN_KEY = SPOKE.legacyChainKey;
+const SPOKE_LEGACY_RPC_KEY = SPOKE.legacyRpcKey;
 const INTERNAL_API_AUTH_SECRET =
   process.env.INTERNAL_API_AUTH_SECRET
   ?? dotEnv.INTERNAL_API_AUTH_SECRET
@@ -118,11 +124,16 @@ async function main() {
     cwd: rootDir,
     env: {
       ...process.env,
+      HUB_NETWORK,
       HUB_RPC_URL,
       HUB_CHAIN_ID: String(HUB_CHAIN_ID),
+      SPOKE_NETWORKS: process.env.SPOKE_NETWORKS ?? SPOKE_NETWORK,
       SPOKE_NETWORK,
       [SPOKE_RPC_KEY]: SPOKE_RPC_URL,
+      [SPOKE_TENDERLY_RPC_KEY]: SPOKE_RPC_URL,
       [SPOKE_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
+      [SPOKE_LEGACY_RPC_KEY]: SPOKE_RPC_URL,
+      [SPOKE_LEGACY_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
       INTERNAL_API_AUTH_SECRET
     }
   });
@@ -152,14 +163,18 @@ async function main() {
   const serviceEnv = {
     ...process.env,
     ...localEnv,
+    HUB_NETWORK,
     HUB_RPC_URL,
     SPOKE_RPC_URL,
     HUB_CHAIN_ID: String(HUB_CHAIN_ID),
     SPOKE_CHAIN_ID: String(SPOKE_CHAIN_ID),
+    SPOKE_NETWORKS: process.env.SPOKE_NETWORKS ?? SPOKE_NETWORK,
     SPOKE_NETWORK,
     [SPOKE_RPC_KEY]: SPOKE_RPC_URL,
+    [SPOKE_TENDERLY_RPC_KEY]: SPOKE_RPC_URL,
     [SPOKE_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
-    [SPOKE_ADMIN_RPC_KEY]: SPOKE_ADMIN_RPC_URL,
+    [SPOKE_LEGACY_RPC_KEY]: SPOKE_RPC_URL,
+    [SPOKE_LEGACY_CHAIN_KEY]: String(SPOKE_CHAIN_ID),
     INTERNAL_API_AUTH_SECRET,
     RELAYER_PRIVATE_KEY: relayerPrivateKey,
     BRIDGE_PRIVATE_KEY: bridgePrivateKey,
@@ -768,12 +783,12 @@ async function ensureOperatorGas(localEnv) {
     `[e2e] operator gas targets: default=${formatEther(minOperatorGas)} ETH prover=${formatEther(minProverGas)} ETH`
   );
 
-  await ensureNativeBalance(hubDeployer, hubPublic, relayer.address, minOperatorGas, "hub relayer", HUB_ADMIN_RPC_URL);
-  await ensureNativeBalance(hubDeployer, hubPublic, bridge.address, minOperatorGas, "hub bridge", HUB_ADMIN_RPC_URL);
-  await ensureNativeBalance(hubDeployer, hubPublic, prover.address, minProverGas, "hub prover", HUB_ADMIN_RPC_URL);
-  await ensureNativeBalance(spokeDeployer, spokePublic, relayer.address, minOperatorGas, "spoke relayer", SPOKE_ADMIN_RPC_URL);
-  await ensureNativeBalance(spokeDeployer, spokePublic, bridge.address, minOperatorGas, "spoke bridge", SPOKE_ADMIN_RPC_URL);
-  await ensureNativeBalance(spokeDeployer, spokePublic, prover.address, minProverGas, "spoke prover", SPOKE_ADMIN_RPC_URL);
+  await ensureNativeBalance(hubDeployer, hubPublic, relayer.address, minOperatorGas, "hub relayer", HUB_RPC_URL);
+  await ensureNativeBalance(hubDeployer, hubPublic, bridge.address, minOperatorGas, "hub bridge", HUB_RPC_URL);
+  await ensureNativeBalance(hubDeployer, hubPublic, prover.address, minProverGas, "hub prover", HUB_RPC_URL);
+  await ensureNativeBalance(spokeDeployer, spokePublic, relayer.address, minOperatorGas, "spoke relayer", SPOKE_RPC_URL);
+  await ensureNativeBalance(spokeDeployer, spokePublic, bridge.address, minOperatorGas, "spoke bridge", SPOKE_RPC_URL);
+  await ensureNativeBalance(spokeDeployer, spokePublic, prover.address, minProverGas, "spoke prover", SPOKE_RPC_URL);
 }
 
 function resolveMinProverGas(minOperatorGas) {
@@ -845,12 +860,12 @@ async function logOperatorBalances(localEnv) {
   );
 }
 
-async function ensureNativeBalance(walletClient, publicClient, target, minBalanceWei, label, adminRpcUrl) {
+async function ensureNativeBalance(walletClient, publicClient, target, minBalanceWei, label, rpcUrl) {
   const current = await publicClient.getBalance({ address: target });
   if (current >= minBalanceWei) return;
 
-  if (E2E_USE_TENDERLY_FUNDING && isTenderlyRpc(adminRpcUrl)) {
-    await tenderlySetBalance(adminRpcUrl, target, minBalanceWei);
+  if (E2E_USE_TENDERLY_FUNDING && isTenderlyRpc(rpcUrl)) {
+    await tenderlySetBalance(rpcUrl, target, minBalanceWei);
     const updated = await publicClient.getBalance({ address: target });
     if (updated >= minBalanceWei) return;
     throw new Error(
@@ -885,7 +900,7 @@ async function ensureNativeBalance(walletClient, publicClient, target, minBalanc
 
 async function ensureDeployerGasBeforeDeploy() {
   if (!E2E_USE_TENDERLY_FUNDING) return;
-  if (!isTenderlyRpc(HUB_ADMIN_RPC_URL) && !isTenderlyRpc(SPOKE_ADMIN_RPC_URL)) return;
+  if (!isTenderlyRpc(HUB_RPC_URL) && !isTenderlyRpc(SPOKE_RPC_URL)) return;
 
   const minDeployerGas = parseEther(process.env.E2E_MIN_DEPLOYER_GAS_ETH ?? "2");
   const deployerKey = process.env.DEPLOYER_PRIVATE_KEY ?? DEFAULT_DEPLOYER_PRIVATE_KEY;
@@ -908,30 +923,30 @@ async function ensureDeployerGasBeforeDeploy() {
 
   await ensureBalanceViaTenderlyIfNeeded(
     hubPublic,
-    HUB_ADMIN_RPC_URL,
+    HUB_RPC_URL,
     deployer.address,
     minDeployerGas,
     "hub deployer"
   );
   await ensureBalanceViaTenderlyIfNeeded(
     spokePublic,
-    SPOKE_ADMIN_RPC_URL,
+    SPOKE_RPC_URL,
     deployer.address,
     minDeployerGas,
     "spoke deployer"
   );
 }
 
-async function ensureBalanceViaTenderlyIfNeeded(publicClient, adminRpcUrl, address, minBalanceWei, label) {
+async function ensureBalanceViaTenderlyIfNeeded(publicClient, rpcUrl, address, minBalanceWei, label) {
   const current = await publicClient.getBalance({ address });
   if (current >= minBalanceWei) return;
-  if (!isTenderlyRpc(adminRpcUrl)) {
+  if (!isTenderlyRpc(rpcUrl)) {
     throw new Error(
       `${label} below required balance (${formatEther(current)} < ${formatEther(minBalanceWei)}) ` +
-      `and no Tenderly Admin RPC configured.`
+      `and no Tenderly RPC configured.`
     );
   }
-  await tenderlySetBalance(adminRpcUrl, address, minBalanceWei);
+  await tenderlySetBalance(rpcUrl, address, minBalanceWei);
   const updated = await publicClient.getBalance({ address });
   if (updated < minBalanceWei) {
     throw new Error(
@@ -940,7 +955,7 @@ async function ensureBalanceViaTenderlyIfNeeded(publicClient, adminRpcUrl, addre
   }
 }
 
-async function tenderlySetBalance(adminRpcUrl, address, amountWei) {
+async function tenderlySetBalance(rpcUrl, address, amountWei) {
   const payload = {
     jsonrpc: "2.0",
     id: Date.now(),
@@ -948,7 +963,7 @@ async function tenderlySetBalance(adminRpcUrl, address, amountWei) {
     params: [[address], toQuantityHex(amountWei)]
   };
 
-  const res = await fetch(adminRpcUrl, {
+  const res = await fetch(rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -1052,21 +1067,47 @@ function resolveEnvValue(key, fallback = "") {
   return process.env[key] ?? dotEnv[key] ?? fallback;
 }
 
-function resolveSpokeConfig(defaultRpcUrl = "") {
-  const network = normalizeSpokeNetwork(resolveEnvValue("SPOKE_NETWORK", "base"));
-  const config = SPOKE_NETWORKS[network];
-  const chainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
-  const rpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
-  const adminRpcKey = `SPOKE_${config.envPrefix}_ADMIN_RPC_URL`;
+function parseNetworkList(rawValue) {
+  return String(rawValue)
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map((value) => normalizeNetwork(value));
+}
 
-  const chainId = Number(resolveEnvValue(chainKey, String(config.defaultChainId)));
+function resolveNetworkRpc(network, fallback = "") {
+  const config = NETWORKS[network];
+  const tenderlyKey = `${config.envPrefix}_TENDERLY_RPC_URL`;
+  const rpcKey = `${config.envPrefix}_RPC_URL`;
+  const legacySpokeKey = `SPOKE_${config.envPrefix}_RPC_URL`;
+
+  return resolveEnvValue(
+    tenderlyKey,
+    resolveEnvValue(rpcKey, resolveEnvValue(legacySpokeKey, fallback))
+  );
+}
+
+function resolveSpokeConfig(defaultRpcUrl = "") {
+  const spokeNetworks = parseNetworkList(resolveEnvValue("SPOKE_NETWORKS", resolveEnvValue("SPOKE_NETWORK", "base")));
+  const network = spokeNetworks[0] ?? "base";
+  const config = NETWORKS[network];
+  const chainKey = `${config.envPrefix}_CHAIN_ID`;
+  const rpcKey = `${config.envPrefix}_RPC_URL`;
+  const tenderlyRpcKey = `${config.envPrefix}_TENDERLY_RPC_URL`;
+  const legacyChainKey = `SPOKE_${config.envPrefix}_CHAIN_ID`;
+  const legacyRpcKey = `SPOKE_${config.envPrefix}_RPC_URL`;
+
+  const chainId = Number(resolveEnvValue(chainKey, resolveEnvValue(legacyChainKey, String(config.defaultChainId))));
   if (!Number.isInteger(chainId) || chainId <= 0) {
-    throw new Error(`Invalid ${chainKey} for SPOKE_NETWORK=${network}: ${chainId}`);
+    throw new Error(`Invalid ${chainKey} for SPOKE_NETWORKS=${spokeNetworks.join(",")}: ${chainId}`);
   }
 
-  const rpcUrl = resolveEnvValue(rpcKey, network === "base" ? defaultRpcUrl : "");
+  const rpcUrl = resolveEnvValue(
+    tenderlyRpcKey,
+    resolveEnvValue(rpcKey, resolveEnvValue(legacyRpcKey, network === "base" ? defaultRpcUrl : ""))
+  );
   if (!rpcUrl) {
-    throw new Error(`Missing ${rpcKey} for SPOKE_NETWORK=${network}`);
+    throw new Error(`Missing ${tenderlyRpcKey} or ${rpcKey} for SPOKE_NETWORKS=${spokeNetworks.join(",")}`);
   }
 
   return {
@@ -1074,19 +1115,22 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
     label: config.label,
     chainId,
     rpcUrl,
-    adminRpcUrl: resolveEnvValue(adminRpcKey, rpcUrl),
     chainKey,
     rpcKey,
-    adminRpcKey
+    tenderlyRpcKey,
+    legacyChainKey,
+    legacyRpcKey
   };
 }
 
-function normalizeSpokeNetwork(value) {
+function normalizeNetwork(value) {
   const normalized = String(value).trim().toLowerCase();
+  if (normalized === "mainnet") return "ethereum";
   if (normalized === "bnb") return "bsc";
-  if (normalized in SPOKE_NETWORKS) return normalized;
+  if (normalized === "world") return "worldchain";
+  if (normalized in NETWORKS) return normalized;
 
   throw new Error(
-    `Unsupported SPOKE_NETWORK=${value}. Use one of: ${Object.keys(SPOKE_NETWORKS).join(", ")}`
+    `Unsupported network=${value}. Use one of: ${Object.keys(NETWORKS).join(", ")}`
   );
 }

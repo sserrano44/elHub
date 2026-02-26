@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IDepositProofVerifier} from "../interfaces/IDepositProofVerifier.sol";
 import {ILightClientVerifier} from "../interfaces/ILightClientVerifier.sol";
 import {IAcrossDepositEventVerifier} from "../interfaces/IAcrossDepositEventVerifier.sol";
@@ -9,7 +11,7 @@ import {IAcrossDepositProofBackend} from "../interfaces/IAcrossDepositProofBacke
 
 /// @notice Canonical source-event deposit proof backend.
 /// @dev Verifies source finality + source Across event inclusion and binds it to witness + destination receiver.
-contract AcrossDepositProofBackend is Ownable, IAcrossDepositProofBackend {
+contract AcrossDepositProofBackend is Ownable, Initializable, UUPSUpgradeable, IAcrossDepositProofBackend {
     ILightClientVerifier public immutable lightClientVerifier;
     IAcrossDepositEventVerifier public immutable eventVerifier;
 
@@ -27,7 +29,15 @@ contract AcrossDepositProofBackend is Ownable, IAcrossDepositProofBackend {
         if (address(eventVerifier_) == address(0)) revert InvalidVerifier(address(eventVerifier_));
         lightClientVerifier = lightClientVerifier_;
         eventVerifier = eventVerifier_;
+        _disableInitializers();
     }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setSourceSpokePool(uint256 sourceChainId, address spokePool) external onlyOwner {
         if (sourceChainId == 0 || spokePool == address(0)) {

@@ -4,6 +4,7 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib"]
+allow_paths = ["../node_modules"]
 solc_version = "0.8.24"
 evm_version = "cancun"
 optimizer = true
@@ -12,5 +13,6 @@ ffi = true
 via_ir = true
 
 remappings = [
-  "@openzeppelin/=src/vendor/openzeppelin/"
+  "@openzeppelin/=src/vendor/openzeppelin/",
+  "@openzeppelin-contracts/=../node_modules/@openzeppelin/contracts/"
 ]

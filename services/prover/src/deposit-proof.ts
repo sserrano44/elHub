@@ -1,5 +1,7 @@
 import { encodeAbiParameters, type Address, type Hex } from "viem";
 
+const CANONICAL_PROOF_SCHEMA_VERSION = 1;
+
 export type DepositWitnessProofInput = {
   sourceChainId: bigint;
   depositId: bigint;
@@ -98,7 +100,7 @@ export function buildCanonicalDepositProof(
     ]
   );
 
-  return encodeAbiParameters(
+  const payload = encodeAbiParameters(
     [
       {
         type: "tuple",
@@ -122,6 +124,14 @@ export function buildCanonicalDepositProof(
         inclusionProof
       }
     ]
+  );
+
+  return encodeAbiParameters(
+    [
+      { name: "version", type: "uint8" },
+      { name: "payload", type: "bytes" }
+    ],
+    [CANONICAL_PROOF_SCHEMA_VERSION, payload]
   );
 }
 
@@ -188,7 +198,7 @@ export function buildCanonicalBorrowFillProof(
     ]
   );
 
-  return encodeAbiParameters(
+  const payload = encodeAbiParameters(
     [
       {
         type: "tuple",
@@ -212,5 +222,13 @@ export function buildCanonicalBorrowFillProof(
         inclusionProof
       }
     ]
+  );
+
+  return encodeAbiParameters(
+    [
+      { name: "version", type: "uint8" },
+      { name: "payload", type: "bytes" }
+    ],
+    [CANONICAL_PROOF_SCHEMA_VERSION, payload]
   );
 }

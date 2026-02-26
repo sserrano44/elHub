@@ -23,12 +23,9 @@ const contracts = [
   "SpokeAcrossBorrowReceiver",
   "MockBridgeAdapter",
   "AcrossBridgeAdapter",
-  "CanonicalBridgeAdapter",
   "MockAcrossSpokePool",
-  "MockCanonicalTokenBridge",
   "Verifier",
   "Groth16VerifierAdapter",
-  "DepositProofVerifierStub",
   "BorrowFillProofVerifier",
   "AcrossBorrowFillProofBackend"
 ];

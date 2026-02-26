@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Pausable} from "@openzeppelin/security/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
@@ -12,7 +14,7 @@ import {IInterestRateModel} from "../interfaces/IInterestRateModel.sol";
 import {IHubRiskManager} from "../interfaces/IHubRiskManager.sol";
 import {IHubMoneyMarket} from "../interfaces/IHubMoneyMarket.sol";
 
-contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
+contract HubMoneyMarket is Ownable, Initializable, UUPSUpgradeable, Pausable, ReentrancyGuard, IHubMoneyMarket {
     using SafeERC20 for IERC20;
 
     struct Market {
@@ -87,7 +89,15 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
     constructor(address owner_, ITokenRegistry tokenRegistry_, IInterestRateModel rateModel_) Ownable(owner_) {
         tokenRegistry = tokenRegistry_;
         rateModel = rateModel_;
+        _disableInitializers();
     }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function initializeMarket(address asset) external onlyOwner {
         Market storage market = markets[asset];

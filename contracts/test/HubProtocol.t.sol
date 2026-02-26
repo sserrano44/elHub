@@ -295,18 +295,11 @@ contract HubProtocolTest is TestBase {
         uint256 borrowAmount = 100e6;
         uint256 relayerFee = 1e6;
 
-        spokeUSDC.mint(relayer, borrowAmount);
-        vm.prank(relayer);
-        spokeUSDC.approve(address(portal), type(uint256).max);
-
         DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, borrowAmount, 2);
         bytes memory borrowSig = _signIntent(borrowIntent);
 
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(borrowIntent, borrowSig);
-
-        vm.prank(relayer);
-        portal.fillBorrow(borrowIntent, relayerFee, "");
 
         vm.prank(relayer);
         settlement.recordVerifiedFillEvidence(
@@ -393,21 +386,15 @@ contract HubProtocolTest is TestBase {
 
         DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, 10e6, 8);
         bytes memory borrowSig = _signIntent(borrowIntent);
-        spokeUSDC.mint(relayer, borrowIntent.amount);
-        vm.prank(relayer);
-        spokeUSDC.approve(address(portal), type(uint256).max);
 
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(borrowIntent, borrowSig);
 
         vm.prank(relayer);
-        portal.fillBorrow(borrowIntent, 0, "");
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
 
         vm.prank(relayer);
         vm.expectRevert();
-        portal.fillBorrow(borrowIntent, 0, "");
-
-        vm.prank(relayer);
         settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
 
         DataTypes.BorrowFinalize[] memory actions = new DataTypes.BorrowFinalize[](1);
@@ -441,6 +428,90 @@ contract HubProtocolTest is TestBase {
 
         vm.expectRevert();
         settlement.settleBatch(replayIntentBatch, DEV_PROOF);
+    }
+
+    function test_partialBorrowFill_canSettleBelowLockAmount() external {
+        uint256 collateralAmount = 200e6;
+        uint256 lockedAmount = 100e6;
+        uint256 filledAmount = 95e6;
+        uint256 relayerFee = 1e6;
+
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), collateralAmount, user);
+
+        DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, lockedAmount, 9101);
+        bytes memory borrowSig = _signIntent(borrowIntent);
+
+        vm.prank(relayer);
+        bytes32 intentId = lockManager.lock(borrowIntent, borrowSig);
+
+        vm.prank(relayer);
+        settlement.recordVerifiedFillEvidence(
+            intentId,
+            Constants.INTENT_BORROW,
+            user,
+            address(hubUSDC),
+            filledAmount,
+            relayerFee,
+            relayer
+        );
+
+        DataTypes.BorrowFinalize[] memory borrowFinal = new DataTypes.BorrowFinalize[](1);
+        borrowFinal[0] = DataTypes.BorrowFinalize({
+            intentId: intentId,
+            user: user,
+            hubAsset: address(hubUSDC),
+            amount: filledAmount,
+            fee: relayerFee,
+            relayer: relayer
+        });
+
+        DataTypes.SettlementBatch memory batch = DataTypes.SettlementBatch({
+            batchId: 9_500,
+            hubChainId: block.chainid,
+            spokeChainId: 480,
+            actionsRoot: bytes32(0),
+            supplyCredits: new DataTypes.SupplyCredit[](0),
+            repayCredits: new DataTypes.RepayCredit[](0),
+            borrowFinalizations: borrowFinal,
+            withdrawFinalizations: new DataTypes.WithdrawFinalize[](0)
+        });
+        batch.actionsRoot = settlement.computeActionsRoot(batch);
+
+        settlement.settleBatch(batch, DEV_PROOF);
+
+        assertEq(market.getUserDebt(user, address(hubUSDC)), filledAmount, "debt should equal filled amount");
+        assertTrue(settlement.isIntentSettled(intentId), "intent should be settled");
+    }
+
+    function test_partialBorrowFill_rejectsWhenFillAmountExceedsLock() external {
+        uint256 collateralAmount = 200e6;
+        uint256 lockedAmount = 100e6;
+
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), collateralAmount, user);
+
+        DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, lockedAmount, 9102);
+        bytes memory borrowSig = _signIntent(borrowIntent);
+
+        vm.prank(relayer);
+        bytes32 intentId = lockManager.lock(borrowIntent, borrowSig);
+
+        vm.prank(relayer);
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceLockMismatch.selector, intentId));
+        settlement.recordVerifiedFillEvidence(
+            intentId,
+            Constants.INTENT_BORROW,
+            user,
+            address(hubUSDC),
+            lockedAmount + 1,
+            0,
+            relayer
+        );
     }
 
     function test_settlementAllowsSameDepositIdAcrossDifferentSpokeChains() external {
@@ -515,13 +586,6 @@ contract HubProtocolTest is TestBase {
 
     function test_failurePaths_missingLockMissingFillExpiredIntent() external {
         DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, 10e6, 50);
-        spokeUSDC.mint(relayer, borrowIntent.amount);
-        vm.prank(relayer);
-        spokeUSDC.approve(address(portal), type(uint256).max);
-
-        vm.prank(relayer);
-        portal.fillBorrow(borrowIntent, 0, "");
-
         bytes32 intentId = IntentHasher.rawIntentId(borrowIntent);
 
         uint8 lockStatusNone = lockManager.LOCK_STATUS_NONE();
@@ -694,15 +758,8 @@ contract HubProtocolTest is TestBase {
         DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, borrowAmount, 620);
         bytes memory borrowSig = _signIntent(borrowIntent);
 
-        spokeUSDC.mint(relayer, borrowAmount);
-        vm.prank(relayer);
-        spokeUSDC.approve(address(portal), type(uint256).max);
-
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(borrowIntent, borrowSig);
-
-        vm.prank(relayer);
-        portal.fillBorrow(borrowIntent, 0, "");
 
         vm.prank(relayer);
         settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowAmount, 0, relayer);
@@ -747,15 +804,8 @@ contract HubProtocolTest is TestBase {
         withdrawIntent.outputToken = address(spokeWETH);
         bytes memory withdrawSig = _signIntent(withdrawIntent);
 
-        spokeWETH.mint(relayer, withdrawAmount);
-        vm.prank(relayer);
-        spokeWETH.approve(address(portal), type(uint256).max);
-
         vm.prank(relayer);
         bytes32 intentId = lockManager.lock(withdrawIntent, withdrawSig);
-
-        vm.prank(relayer);
-        portal.fillWithdraw(withdrawIntent, 0, "");
 
         vm.prank(relayer);
         settlement.recordVerifiedFillEvidence(
@@ -840,7 +890,7 @@ contract HubProtocolTest is TestBase {
 
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceLockMismatch.selector, intentId));
-        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount - 1, 0, relayer);
+        settlement.recordVerifiedFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount + 1, 0, relayer);
     }
 
     function test_tokenRegistryReRegisterHubTokenClearsOldSpokeMapping() external {
@@ -859,9 +909,13 @@ contract HubProtocolTest is TestBase {
             })
         );
 
-        assertEq(registry.getHubTokenBySpoke(address(spokeUSDC)), address(0), "old spoke mapping should be cleared");
         assertEq(
-            registry.getHubTokenBySpoke(address(replacementSpokeToken)),
+            registry.getHubTokenBySpoke(block.chainid, address(spokeUSDC)),
+            address(0),
+            "old spoke mapping should be cleared"
+        );
+        assertEq(
+            registry.getHubTokenBySpoke(block.chainid, address(replacementSpokeToken)),
             address(hubUSDC),
             "replacement spoke mapping should point to hub token"
         );
@@ -1052,6 +1106,42 @@ contract HubProtocolTest is TestBase {
         assertEq(uint256(cancelledStatus), uint256(3), "expired lock should be cancellable");
         assertEq(lockManager.reservedDebt(user, address(hubUSDC)), 0, "reserved debt should clear after cancel");
         assertEq(lockManager.reservedLiquidity(address(hubUSDC)), 0, "reserved liquidity should clear after cancel");
+    }
+
+    function test_activeLockCanBeCancelledByRelayerOrOwner() external {
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), 300e6, user);
+
+        DataTypes.Intent memory firstIntent = _makeIntent(Constants.INTENT_BORROW, 90e6, 615);
+        bytes memory firstSig = _signIntent(firstIntent);
+
+        vm.prank(relayer);
+        bytes32 firstIntentId = lockManager.lock(firstIntent, firstSig);
+        assertEq(lockManager.reservedDebt(user, address(hubUSDC)), firstIntent.amount, "reservation should exist");
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(HubLockManager.UnauthorizedLockCanceller.selector, user));
+        lockManager.cancelLock(firstIntentId);
+
+        vm.prank(relayer);
+        lockManager.cancelLock(firstIntentId);
+        (,,,,,,,, uint8 firstStatus) = lockManager.locks(firstIntentId);
+        assertEq(uint256(firstStatus), uint256(3), "relayer should be able to cancel active lock");
+        assertEq(lockManager.reservedDebt(user, address(hubUSDC)), 0, "reservation should clear after relayer cancel");
+
+        DataTypes.Intent memory secondIntent = _makeIntent(Constants.INTENT_BORROW, 70e6, 616);
+        bytes memory secondSig = _signIntent(secondIntent);
+
+        vm.prank(relayer);
+        bytes32 secondIntentId = lockManager.lock(secondIntent, secondSig);
+        assertEq(lockManager.reservedDebt(user, address(hubUSDC)), secondIntent.amount, "reservation should exist");
+
+        lockManager.cancelLock(secondIntentId);
+        (,,,,,,,, uint8 secondStatus) = lockManager.locks(secondIntentId);
+        assertEq(uint256(secondStatus), uint256(3), "owner should be able to cancel active lock");
+        assertEq(lockManager.reservedDebt(user, address(hubUSDC)), 0, "reservation should clear after owner cancel");
     }
 
     function test_intentInboxRejectsInvalidDomainSignaturesAndNonceReplay() external {

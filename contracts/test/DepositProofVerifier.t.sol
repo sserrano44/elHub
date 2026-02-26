@@ -10,6 +10,7 @@ import {MockLightClientVerifier} from "../src/mocks/MockLightClientVerifier.sol"
 import {MockAcrossDepositEventVerifier} from "../src/mocks/MockAcrossDepositEventVerifier.sol";
 
 contract DepositProofVerifierTest is TestBase {
+    uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
     uint256 internal constant SOURCE_CHAIN_ID = 8453;
 
     MockLightClientVerifier internal lightClientVerifier;
@@ -130,6 +131,6 @@ contract DepositProofVerifierTest is TestBase {
             inclusionProof: inclusionProof
         });
 
-        return abi.encode(canonical);
+        return abi.encode(CANONICAL_PROOF_SCHEMA_VERSION, abi.encode(canonical));
     }
 }

@@ -2,10 +2,12 @@
 pragma solidity ^0.8.24;
 
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 
-contract HubCustody is AccessControl {
+contract HubCustody is AccessControl, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     bytes32 public constant CANONICAL_BRIDGE_RECEIVER_ROLE = keccak256("CANONICAL_BRIDGE_RECEIVER_ROLE");
@@ -46,7 +48,14 @@ contract HubCustody is AccessControl {
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _disableInitializers();
     }
+
+    function initializeProxy(address admin) external initializer {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function attestationKeyFor(
         uint256 originChainId,

@@ -17,8 +17,9 @@ async function main() {
     cwd: rootDir,
     env: {
       ...process.env,
-      HUB_CHAIN_ID: process.env.HUB_CHAIN_ID ?? "1",
-      SPOKE_NETWORK: process.env.SPOKE_NETWORK ?? "base",
+      HUB_NETWORK: process.env.HUB_NETWORK ?? "ethereum",
+      HUB_CHAIN_ID: process.env.HUB_CHAIN_ID ?? process.env.ETHEREUM_CHAIN_ID ?? "1",
+      SPOKE_NETWORKS: process.env.SPOKE_NETWORKS ?? "base",
       E2E_SUPPLY_ONLY: "1"
     }
   });

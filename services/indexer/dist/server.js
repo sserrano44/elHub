@@ -5,6 +5,7 @@ import { z } from "zod";
 import { JsonIndexerStore, SqliteIndexerStore } from "./store";
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
+const isLiveMode = (process.env.LIVE_MODE ?? "0") !== "0";
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN ?? "*";
 const internalAuthSecret = process.env.INTERNAL_API_AUTH_SECRET
     ?? (isProduction ? "" : "dev-internal-auth-secret");
@@ -76,6 +77,7 @@ const statusPatchSchema = z.object({
     metadata: z.record(z.unknown()).optional()
 });
 const depositSchema = z.object({
+    sourceChainId: z.number().int().nonnegative().default(0),
     depositId: z.number().int().nonnegative(),
     user: z.string().startsWith("0x"),
     intentType: z.number().int(),
@@ -161,6 +163,7 @@ app.post("/internal/deposits/upsert", (req, res) => {
         status: parsed.data.status
     });
     res.json(store.upsertDeposit({
+        sourceChainId: parsed.data.sourceChainId,
         depositId: parsed.data.depositId,
         user: parsed.data.user,
         intentType: parsed.data.intentType,
@@ -171,7 +174,15 @@ app.post("/internal/deposits/upsert", (req, res) => {
     }));
 });
 app.get("/deposits/:depositId", (req, res) => {
-    const dep = store.getDeposit(Number(req.params.depositId));
+    const dep = store.getDeposit(0, Number(req.params.depositId));
+    if (!dep) {
+        res.status(404).json({ error: "not_found" });
+        return;
+    }
+    res.json(dep);
+});
+app.get("/deposits/:sourceChainId/:depositId", (req, res) => {
+    const dep = store.getDeposit(Number(req.params.sourceChainId), Number(req.params.depositId));
     if (!dep) {
         res.status(404).json({ error: "not_found" });
         return;
@@ -323,6 +334,14 @@ function validateStartupConfig() {
     }
     if (isProduction && corsAllowOrigin.trim() === "*") {
         throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in production");
+    }
+    if (isLiveMode) {
+        if (corsAllowOrigin.trim() === "*") {
+            throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in LIVE_MODE");
+        }
+        if (internalAuthSecret === "dev-internal-auth-secret") {
+            throw new Error("INTERNAL_API_AUTH_SECRET cannot use dev default in LIVE_MODE");
+        }
     }
     if (isProduction && !internalRequirePrivateIp && internalAllowedIps.size === 0) {
         throw new Error("Set INTERNAL_API_REQUIRE_PRIVATE_IP=1 or configure INTERNAL_API_ALLOWED_IPS in production");

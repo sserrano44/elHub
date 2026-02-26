@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Pausable} from "@openzeppelin/security/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/security/ReentrancyGuard.sol";
 import {Constants} from "../libraries/Constants.sol";
@@ -13,7 +15,7 @@ import {HubCustody} from "./HubCustody.sol";
 import {HubLockManager} from "./HubLockManager.sol";
 import {IHubSettlement} from "../interfaces/IHubSettlement.sol";
 
-contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettlement {
+contract HubSettlement is AccessControl, Initializable, UUPSUpgradeable, Pausable, ReentrancyGuard, IHubSettlement {
     bytes32 public constant SETTLEMENT_ADMIN_ROLE = keccak256("SETTLEMENT_ADMIN_ROLE");
     bytes32 public constant PROOF_FILL_ROLE = keccak256("PROOF_FILL_ROLE");
 
@@ -88,6 +90,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     error FillEvidenceLockNotActive(bytes32 intentId, uint8 status);
     error FillEvidenceLockExpired(bytes32 intentId, uint256 expiry);
     error FillEvidenceLockMismatch(bytes32 intentId);
+    error InvalidFillEvidenceFee(bytes32 intentId, uint256 fee, uint256 amount);
     error InvalidVerifier(address verifier);
     error InvalidMoneyMarket(address market);
     error InvalidCustody(address custody);
@@ -101,7 +104,26 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         moneyMarket = moneyMarket_;
         custody = custody_;
         lockManager = lockManager_;
+        _disableInitializers();
     }
+
+    function initializeProxy(
+        address admin,
+        IVerifier verifier_,
+        HubMoneyMarket moneyMarket_,
+        HubCustody custody_,
+        HubLockManager lockManager_
+    ) external initializer {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(SETTLEMENT_ADMIN_ROLE, admin);
+
+        verifier = verifier_;
+        moneyMarket = moneyMarket_;
+        custody = custody_;
+        lockManager = lockManager_;
+    }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function setVerifier(IVerifier verifier_) external onlyRole(SETTLEMENT_ADMIN_ROLE) {
         if (address(verifier_) == address(0)) revert InvalidVerifier(address(verifier_));
@@ -172,11 +194,13 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         }
         if (
             lock.intentType != input.intentType || lock.user != input.user || lock.hubAsset != input.hubAsset
-                || lock.amount != input.amount || lock.relayer != input.relayer
+                || input.amount == 0 || input.amount > lock.amount || lock.relayer != input.relayer
         ) {
             revert FillEvidenceLockMismatch(intentId);
         }
-
+        if (input.fee >= input.amount) {
+            revert InvalidFillEvidenceFee(intentId, input.fee, input.amount);
+        }
         FillEvidence storage ev = fillEvidence[intentId];
         if (ev.exists) {
             if (ev.consumed) revert FillEvidenceAlreadyConsumed(intentId);

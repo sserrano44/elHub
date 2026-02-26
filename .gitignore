@@ -16,8 +16,13 @@ data
 .corepack
 .pnpm-home
 .tmp
+.codex
+.worktrees
+contracts/slither-output.json
 
 # Local deployment artifacts (environment-specific; do not commit)
 apps/web/public/deployments/local.json
 contracts/deployments/local.env
 contracts/deployments/local.json
+contracts/deployments/live-*-hub-*.env
+contracts/deployments/live-*-hub-*.json

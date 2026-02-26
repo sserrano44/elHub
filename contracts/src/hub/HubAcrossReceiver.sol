@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {Constants} from "../libraries/Constants.sol";
@@ -10,7 +12,7 @@ import {IDepositProofVerifier} from "../interfaces/IDepositProofVerifier.sol";
 
 /// @notice Hub-side receiver for Across callbacks.
 /// @dev Callback messages are untrusted until finalized through `verifyDepositProof`.
-contract HubAcrossReceiver is AccessControl {
+contract HubAcrossReceiver is AccessControl, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     bytes32 public constant RECEIVER_ADMIN_ROLE = keccak256("RECEIVER_ADMIN_ROLE");
@@ -115,7 +117,24 @@ contract HubAcrossReceiver is AccessControl {
 
         emit VerifierSet(address(verifier_));
         emit SpokePoolSet(spokePool_);
+        _disableInitializers();
     }
+
+    function initializeProxy(address admin, IDepositProofVerifier verifier_, address spokePool_) external initializer {
+        if (address(verifier_) == address(0)) revert InvalidVerifier(address(verifier_));
+        if (spokePool_ == address(0)) revert InvalidSpokePool(spokePool_);
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(RECEIVER_ADMIN_ROLE, admin);
+
+        verifier = verifier_;
+        spokePool = spokePool_;
+
+        emit VerifierSet(address(verifier_));
+        emit SpokePoolSet(spokePool_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function setVerifier(IDepositProofVerifier verifier_) external onlyRole(RECEIVER_ADMIN_ROLE) {
         if (address(verifier_) == address(0)) revert InvalidVerifier(address(verifier_));

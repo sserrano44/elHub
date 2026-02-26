@@ -17,6 +17,19 @@
   },
   {
     "type": "function",
+    "name": "UPGRADE_INTERFACE_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "allowedCaller",
     "inputs": [
       {
@@ -77,6 +90,19 @@
   },
   {
     "type": "function",
+    "name": "defaultMaxQuoteAge",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "destinationChainId",
     "inputs": [],
     "outputs": [
@@ -87,6 +113,19 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initializeProxy",
+    "inputs": [
+      {
+        "name": "owner_",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -117,6 +156,19 @@
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proxiableUUID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -160,6 +212,11 @@
         "internalType": "uint32"
       },
       {
+        "name": "maxQuoteAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
         "name": "enabled",
         "type": "bool",
         "internalType": "bool"
@@ -193,6 +250,90 @@
         "name": "fillDeadlineBuffer",
         "type": "uint32",
         "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setDefaultMaxQuoteAge",
+    "inputs": [
+      {
+        "name": "maxQuoteAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setRoute",
+    "inputs": [
+      {
+        "name": "localToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "spokePool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "hubToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "exclusiveRelayer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "fillDeadlineBuffer",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "maxQuoteAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "enabled",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setRoute",
+    "inputs": [
+      {
+        "name": "localToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "spokePool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "hubToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "enabled",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -255,6 +396,24 @@
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "upgradeToAndCall",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "data",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
   },
   {
     "type": "event",
@@ -357,6 +516,32 @@
   },
   {
     "type": "event",
+    "name": "DefaultMaxQuoteAgeSet",
+    "inputs": [
+      {
+        "name": "maxQuoteAge",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Initialized",
+    "inputs": [
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferred",
     "inputs": [
       {
@@ -444,6 +629,46 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "Upgraded",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AddressEmptyCode",
+    "inputs": [
+      {
+        "name": "target",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ERC1967InvalidImplementation",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ERC1967NonPayable",
+    "inputs": []
+  },
+  {
     "type": "error",
     "name": "EnforcedPause",
     "inputs": []
@@ -451,6 +676,11 @@
   {
     "type": "error",
     "name": "ExpectedPause",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FailedInnerCall",
     "inputs": []
   },
   {
@@ -472,6 +702,11 @@
   {
     "type": "error",
     "name": "InvalidFillDeadlineBuffer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidInitialization",
     "inputs": []
   },
   {
@@ -546,6 +781,48 @@
   },
   {
     "type": "error",
+    "name": "InvalidQuoteDeadlines",
+    "inputs": [
+      {
+        "name": "quoteTimestamp",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "fillDeadline",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "exclusivityDeadline",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidQuoteOutputAmount",
+    "inputs": [
+      {
+        "name": "outputAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "inputAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidQuoteTimestamp",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidRecipient",
     "inputs": [
       {
@@ -579,6 +856,11 @@
   },
   {
     "type": "error",
+    "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "OwnableInvalidOwner",
     "inputs": [
       {
@@ -596,6 +878,43 @@
         "name": "account",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "QuoteExpired",
+    "inputs": [
+      {
+        "name": "quoteTimestamp",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "maxAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "currentTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "QuoteTimestampTooFarInFuture",
+    "inputs": [
+      {
+        "name": "quoteTimestamp",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "currentTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -619,6 +938,22 @@
     "type": "error",
     "name": "TimestampOverflow",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnauthorizedCallContext",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnsupportedProxiableUUID",
+    "inputs": [
+      {
+        "name": "slot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
   },
   {
     "type": "error",

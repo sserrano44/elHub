@@ -2,13 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import {Constants} from "../libraries/Constants.sol";
 
 /// @notice Spoke-side receiver for Across borrow fulfillment callbacks.
 /// @dev Callback input is untrusted until hub-side proof finalization verifies this event inclusion.
-contract SpokeAcrossBorrowReceiver is AccessControl {
+contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     bytes32 public constant RECEIVER_ADMIN_ROLE = keccak256("RECEIVER_ADMIN_ROLE");
@@ -70,7 +72,20 @@ contract SpokeAcrossBorrowReceiver is AccessControl {
 
         spokePool = spokePool_;
         emit SpokePoolSet(spokePool_);
+        _disableInitializers();
     }
+
+    function initializeProxy(address admin, address spokePool_) external initializer {
+        if (spokePool_ == address(0)) revert InvalidSpokePool(spokePool_);
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(RECEIVER_ADMIN_ROLE, admin);
+
+        spokePool = spokePool_;
+        emit SpokePoolSet(spokePool_);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function setSpokePool(address spokePool_) external onlyRole(RECEIVER_ADMIN_ROLE) {
         if (spokePool_ == address(0)) revert InvalidSpokePool(spokePool_);

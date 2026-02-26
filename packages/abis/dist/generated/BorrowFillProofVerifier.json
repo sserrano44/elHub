@@ -175,5 +175,16 @@
                 "internalType": "address"
             }
         ]
+    },
+    {
+        "type": "error",
+        "name": "UnsupportedProofVersion",
+        "inputs": [
+            {
+                "name": "version",
+                "type": "uint8",
+                "internalType": "uint8"
+            }
+        ]
     }
 ]

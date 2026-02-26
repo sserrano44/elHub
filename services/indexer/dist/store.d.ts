@@ -1,5 +1,6 @@
 import type { IntentLifecycle, IntentStatus } from "@elhub/sdk";
 export type DepositState = {
+    sourceChainId: number;
     depositId: number;
     user: `0x${string}`;
     intentType: number;
@@ -18,7 +19,7 @@ export interface IndexerStore {
     getIntent(intentId: string): IntentLifecycle | null;
     listIntents(user?: string): IntentLifecycle[];
     upsertDeposit(dep: DepositInput): DepositState;
-    getDeposit(depositId: number): DepositState | null;
+    getDeposit(sourceChainId: number, depositId: number): DepositState | null;
 }
 export declare class JsonIndexerStore implements IndexerStore {
     private readonly filePath;
@@ -29,7 +30,7 @@ export declare class JsonIndexerStore implements IndexerStore {
     getIntent(intentId: string): IntentLifecycle | null;
     listIntents(user?: string): IntentLifecycle[];
     upsertDeposit(dep: DepositInput): DepositState;
-    getDeposit(depositId: number): DepositState | null;
+    getDeposit(sourceChainId: number, depositId: number): DepositState | null;
     private load;
     private save;
 }
@@ -41,5 +42,5 @@ export declare class SqliteIndexerStore implements IndexerStore {
     getIntent(intentId: string): IntentLifecycle | null;
     listIntents(user?: string): IntentLifecycle[];
     upsertDeposit(dep: DepositInput): DepositState;
-    getDeposit(depositId: number): DepositState | null;
+    getDeposit(sourceChainId: number, depositId: number): DepositState | null;
 }

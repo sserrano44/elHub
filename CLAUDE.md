@@ -56,15 +56,15 @@ bash ./circuits/prover/build-artifacts.sh   # Build circuit artifacts (requires 
 
 **Supply/Repay flow:**
 1. User calls `SpokePortal.initiateSupply/initiateRepay` on spoke
-2. Relayer bridges funds to hub (mock canonical bridge in dev)
+2. Across relays funds to hub receiver (mock Across relay in local/dev)
 3. Prover batches deposit actions and generates proof
 4. Settlement on hub credits supply or repays debt
 
 **Borrow/Withdraw flow:**
 1. User signs EIP-712 intent via SDK
 2. Relayer locks intent on hub (`HubLockManager.lock`)
-3. Relayer fills user on spoke (`SpokePortal.fillBorrow/fillWithdraw`)
-4. Relayer records fill evidence on hub settlement
+3. Relayer dispatches Across fill from hub to spoke receiver
+4. Relayer/prover finalizes proof-backed fill evidence on hub
 5. Prover batches finalize actions and generates proof
 6. Settlement consumes lock, updates accounting, reimburses relayer
 
@@ -74,7 +74,7 @@ bash ./circuits/prover/build-artifacts.sh   # Build circuit artifacts (requires 
 
 Hub contracts live in `contracts/src/hub/` — the main ones are `HubMoneyMarket` (share-based accounting, interest accrual), `HubRiskManager` (health factor, LTV, caps), `HubIntentInbox` (EIP-712 verification), `HubLockManager` (lock/reservation), `HubSettlement` (batched ZK-verified settlement), `HubCustody` (bridged funds), `TokenRegistry` (hub↔spoke token mappings).
 
-Spoke contracts live in `contracts/src/spoke/` — `SpokePortal` is the user-facing entry point. Bridge adapters (`CanonicalBridgeAdapter`, `MockBridgeAdapter`) handle cross-chain messaging.
+Spoke contracts live in `contracts/src/spoke/` — `SpokePortal` is the user-facing entry point for inbound supply/repay. `AcrossBridgeAdapter` and `SpokeAcrossBorrowReceiver` handle cross-chain transport/callbacks.
 
 Shared libraries in `contracts/src/libraries/` — `Constants.sol` (WAD, RAY, BPS, MAX_BATCH_ACTIONS=50), `DataTypes.sol` (all struct definitions), `IntentHasher.sol`, `ProofHash.sol`.
 
@@ -125,11 +125,12 @@ The deploy script (`contracts/script/deploy-local.mjs`) deploys all contracts, w
 See `.env.example` for the full reference. Key variables:
 
 ```
-HUB_RPC_URL                          # Hub RPC (default: localhost:8545)
+HUB_NETWORK=ethereum|base|bsc|worldchain
 HUB_CHAIN_ID=8453
-SPOKE_NETWORK=worldchain|ethereum|bsc
-SPOKE_<NETWORK>_RPC_URL              # Active spoke RPC (worldchain defaults to localhost:9545)
-SPOKE_<NETWORK>_CHAIN_ID             # Active spoke chain id
+SPOKE_NETWORKS=base,bsc,worldchain   # Comma-separated; first is active in single-spoke flows
+<NETWORK>_TENDERLY_RPC_URL           # Tenderly RPC for fork/e2e flows
+<NETWORK>_RPC_URL                    # Generic RPC for live deploy flows
+<NETWORK>_CHAIN_ID                   # Network chain id
 INTERNAL_API_AUTH_SECRET              # HMAC key for inter-service auth
 PROVER_MODE=dev|circuit               # Proof generation mode
 PROVER_CIRCUIT_ARTIFACTS_DIR          # Path to circuit build artifacts

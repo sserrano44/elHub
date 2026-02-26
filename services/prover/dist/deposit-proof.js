@@ -1,4 +1,5 @@
 import { encodeAbiParameters } from "viem";
+const CANONICAL_PROOF_SCHEMA_VERSION = 1;
 export function buildCanonicalDepositProof(witness, source) {
     const finalityProof = encodeAbiParameters([
         { name: "sourceChainId", type: "uint256" },
@@ -39,7 +40,7 @@ export function buildCanonicalDepositProof(witness, source) {
             messageHash: witness.messageHash
         }
     ]);
-    return encodeAbiParameters([
+    const payload = encodeAbiParameters([
         {
             type: "tuple",
             components: [
@@ -61,6 +62,10 @@ export function buildCanonicalDepositProof(witness, source) {
             inclusionProof
         }
     ]);
+    return encodeAbiParameters([
+        { name: "version", type: "uint8" },
+        { name: "payload", type: "bytes" }
+    ], [CANONICAL_PROOF_SCHEMA_VERSION, payload]);
 }
 export function buildCanonicalBorrowFillProof(witness, source) {
     const finalityProof = encodeAbiParameters([
@@ -114,7 +119,7 @@ export function buildCanonicalBorrowFillProof(witness, source) {
             hubFinalizer: source.destinationFinalizer
         }
     ]);
-    return encodeAbiParameters([
+    const payload = encodeAbiParameters([
         {
             type: "tuple",
             components: [
@@ -136,5 +141,9 @@ export function buildCanonicalBorrowFillProof(witness, source) {
             inclusionProof
         }
     ]);
+    return encodeAbiParameters([
+        { name: "version", type: "uint8" },
+        { name: "payload", type: "bytes" }
+    ], [CANONICAL_PROOF_SCHEMA_VERSION, payload]);
 }
 //# sourceMappingURL=deposit-proof.js.map

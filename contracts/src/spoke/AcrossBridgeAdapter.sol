@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Pausable} from "@openzeppelin/security/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
@@ -28,14 +30,18 @@ interface IAcrossSpokePool {
 
 /// @notice Across transport adapter for spoke->hub deposits.
 /// @dev This adapter preserves SpokePortal's bridge adapter interface.
-contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapter {
+contract AcrossBridgeAdapter is Ownable, Initializable, UUPSUpgradeable, Pausable, ReentrancyGuard, IBridgeAdapter {
     using SafeERC20 for IERC20;
+    uint32 internal constant DEFAULT_FILL_DEADLINE_BUFFER = 2 hours;
+    uint32 internal constant DEFAULT_MAX_QUOTE_AGE = 30 minutes;
+    uint32 internal constant MAX_QUOTE_FUTURE_DRIFT = 5 minutes;
 
     struct Route {
         address spokePool;
         address hubToken;
         address exclusiveRelayer;
         uint32 fillDeadlineBuffer;
+        uint32 maxQuoteAge;
         bool enabled;
     }
 
@@ -54,7 +60,8 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
     mapping(address => bool) public allowedCaller;
 
     uint256 public immutable destinationChainId;
-    uint32 public defaultFillDeadlineBuffer = 2 hours;
+    uint32 public defaultFillDeadlineBuffer;
+    uint32 public defaultMaxQuoteAge;
 
     event RouteSet(
         address indexed localToken,
@@ -66,6 +73,7 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
     );
     event AllowedCallerSet(address indexed caller, bool allowed);
     event DefaultFillDeadlineBufferSet(uint32 fillDeadlineBuffer);
+    event DefaultMaxQuoteAgeSet(uint32 maxQuoteAge);
     event AcrossBridgeInitiated(
         address indexed localToken,
         address indexed hubToken,
@@ -93,11 +101,28 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
     error InvalidPortalMetadataToken(address expected, address got);
     error InvalidPortalMetadataAmount(uint256 expected, uint256 got);
     error TimestampOverflow();
+    error QuoteExpired(uint32 quoteTimestamp, uint32 maxAge, uint256 currentTimestamp);
+    error QuoteTimestampTooFarInFuture(uint32 quoteTimestamp, uint256 currentTimestamp);
+    error InvalidQuoteOutputAmount(uint256 outputAmount, uint256 inputAmount);
+    error InvalidQuoteDeadlines(uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline);
+    error InvalidQuoteTimestamp();
 
     constructor(address owner_, uint256 destinationChainId_) Ownable(owner_) {
         if (destinationChainId_ == 0) revert InvalidDestinationChainId(destinationChainId_);
         destinationChainId = destinationChainId_;
+        defaultFillDeadlineBuffer = DEFAULT_FILL_DEADLINE_BUFFER;
+        defaultMaxQuoteAge = DEFAULT_MAX_QUOTE_AGE;
+        _disableInitializers();
     }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+        defaultFillDeadlineBuffer = DEFAULT_FILL_DEADLINE_BUFFER;
+        defaultMaxQuoteAge = DEFAULT_MAX_QUOTE_AGE;
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setAllowedCaller(address caller, bool allowed) external onlyOwner {
         if (caller == address(0)) revert UnauthorizedCaller(caller);
@@ -111,6 +136,30 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
         emit DefaultFillDeadlineBufferSet(fillDeadlineBuffer);
     }
 
+    function setDefaultMaxQuoteAge(uint32 maxQuoteAge) external onlyOwner {
+        if (maxQuoteAge == 0) revert InvalidFillDeadlineBuffer();
+        defaultMaxQuoteAge = maxQuoteAge;
+        emit DefaultMaxQuoteAgeSet(maxQuoteAge);
+    }
+
+    function setRoute(
+        address localToken,
+        address spokePool,
+        address hubToken,
+        bool enabled
+    ) external onlyOwner {
+        Route memory current = routes[localToken];
+        _setRoute(
+            localToken,
+            spokePool,
+            hubToken,
+            current.exclusiveRelayer,
+            current.fillDeadlineBuffer,
+            current.maxQuoteAge,
+            enabled
+        );
+    }
+
     function setRoute(
         address localToken,
         address spokePool,
@@ -119,6 +168,39 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
         uint32 fillDeadlineBuffer,
         bool enabled
     ) external onlyOwner {
+        Route memory current = routes[localToken];
+        _setRoute(
+            localToken,
+            spokePool,
+            hubToken,
+            exclusiveRelayer,
+            fillDeadlineBuffer,
+            current.maxQuoteAge,
+            enabled
+        );
+    }
+
+    function setRoute(
+        address localToken,
+        address spokePool,
+        address hubToken,
+        address exclusiveRelayer,
+        uint32 fillDeadlineBuffer,
+        uint32 maxQuoteAge,
+        bool enabled
+    ) external onlyOwner {
+        _setRoute(localToken, spokePool, hubToken, exclusiveRelayer, fillDeadlineBuffer, maxQuoteAge, enabled);
+    }
+
+    function _setRoute(
+        address localToken,
+        address spokePool,
+        address hubToken,
+        address exclusiveRelayer,
+        uint32 fillDeadlineBuffer,
+        uint32 maxQuoteAge,
+        bool enabled
+    ) internal {
         if (localToken == address(0)) revert InvalidToken(localToken);
         if (spokePool == address(0)) revert InvalidSpokePool(spokePool);
         if (hubToken == address(0)) revert InvalidToken(hubToken);
@@ -128,6 +210,7 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             hubToken: hubToken,
             exclusiveRelayer: exclusiveRelayer,
             fillDeadlineBuffer: fillDeadlineBuffer,
+            maxQuoteAge: maxQuoteAge,
             enabled: enabled
         });
 
@@ -157,7 +240,7 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             revert RouteNotEnabled(token);
         }
 
-        if (extraData.length != 32 * 7) revert InvalidPortalMetadataLength(extraData.length);
+        if (extraData.length != 32 * 12) revert InvalidPortalMetadataLength(extraData.length);
         (
             uint256 depositId,
             uint8 intentType,
@@ -165,8 +248,13 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             address spokeToken,
             uint256 spokeAmount,
             uint256 sourceChainId,
-            uint256 messageDestinationChainId
-        ) = abi.decode(extraData, (uint256, uint8, address, address, uint256, uint256, uint256));
+            uint256 messageDestinationChainId,
+            uint256 quoteOutputAmount,
+            uint32 quoteTimestamp,
+            uint32 quoteFillDeadline,
+            uint32 quoteExclusivityDeadline,
+            address quoteExclusiveRelayer
+        ) = abi.decode(extraData, (uint256, uint8, address, address, uint256, uint256, uint256, uint256, uint32, uint32, uint32, address));
 
         if (intentType != Constants.INTENT_SUPPLY && intentType != Constants.INTENT_REPAY) {
             revert InvalidPortalMetadataIntent(intentType);
@@ -183,6 +271,24 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
         if (spokeAmount != amount) {
             revert InvalidPortalMetadataAmount(amount, spokeAmount);
         }
+        if (quoteOutputAmount == 0 || quoteOutputAmount > amount) {
+            revert InvalidQuoteOutputAmount(quoteOutputAmount, amount);
+        }
+        if (quoteTimestamp == 0) revert InvalidQuoteTimestamp();
+
+        uint32 maxQuoteAge = route.maxQuoteAge == 0 ? defaultMaxQuoteAge : route.maxQuoteAge;
+        if (block.timestamp > uint256(quoteTimestamp) + maxQuoteAge) {
+            revert QuoteExpired(quoteTimestamp, maxQuoteAge, block.timestamp);
+        }
+        if (uint256(quoteTimestamp) > block.timestamp + MAX_QUOTE_FUTURE_DRIFT) {
+            revert QuoteTimestampTooFarInFuture(quoteTimestamp, block.timestamp);
+        }
+        if (quoteFillDeadline <= quoteTimestamp || quoteFillDeadline <= block.timestamp) {
+            revert InvalidQuoteDeadlines(quoteTimestamp, quoteFillDeadline, quoteExclusivityDeadline);
+        }
+        if (quoteExclusivityDeadline > quoteFillDeadline) {
+            revert InvalidQuoteDeadlines(quoteTimestamp, quoteFillDeadline, quoteExclusivityDeadline);
+        }
 
         AcrossDepositMessage memory messagePayload = AcrossDepositMessage({
             depositId: depositId,
@@ -190,22 +296,17 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             user: user,
             spokeToken: token,
             hubAsset: route.hubToken,
-            amount: amount,
+            amount: quoteOutputAmount,
             sourceChainId: sourceChainId,
             destinationChainId: destinationChainId
         });
         bytes memory acrossMessage = abi.encode(messagePayload);
 
-        uint32 fillDeadlineBuffer = route.fillDeadlineBuffer == 0 ? defaultFillDeadlineBuffer : route.fillDeadlineBuffer;
-        if (fillDeadlineBuffer == 0) revert InvalidFillDeadlineBuffer();
-        if (block.timestamp > type(uint32).max - fillDeadlineBuffer) revert TimestampOverflow();
-
-        uint32 quoteTimestamp = uint32(block.timestamp);
-        uint32 fillDeadline = uint32(block.timestamp) + fillDeadlineBuffer;
-
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         IERC20(token).safeApprove(route.spokePool, 0);
         IERC20(token).safeApprove(route.spokePool, amount);
+
+        address exclusiveRelayer = quoteExclusiveRelayer == address(0) ? route.exclusiveRelayer : quoteExclusiveRelayer;
 
         IAcrossSpokePool(route.spokePool).depositV3(
             msg.sender,
@@ -213,12 +314,12 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             token,
             route.hubToken,
             amount,
-            amount,
+            quoteOutputAmount,
             destinationChainId,
-            route.exclusiveRelayer,
+            exclusiveRelayer,
             quoteTimestamp,
-            fillDeadline,
-            0,
+            quoteFillDeadline,
+            quoteExclusivityDeadline,
             acrossMessage
         );
 
@@ -230,9 +331,9 @@ contract AcrossBridgeAdapter is Ownable, Pausable, ReentrancyGuard, IBridgeAdapt
             hubRecipient,
             route.spokePool,
             amount,
-            route.exclusiveRelayer,
+            exclusiveRelayer,
             quoteTimestamp,
-            fillDeadline,
+            quoteFillDeadline,
             acrossMessage,
             msg.sender
         );

@@ -181,6 +181,7 @@ function normalizeQueuedAction(input) {
         case "repay":
             return {
                 kind,
+                sourceChainId: BigInt(asString(input.sourceChainId)),
                 depositId: BigInt(asString(input.depositId)),
                 user: asHex(input.user),
                 hubAsset: asHex(input.hubAsset),
@@ -217,7 +218,7 @@ export function actionKey(action) {
     switch (action.kind) {
         case "supply":
         case "repay":
-            return `${action.kind}:${action.depositId.toString()}:${action.user}:${action.hubAsset}:${action.amount.toString()}`;
+            return `${action.kind}:${action.sourceChainId.toString()}:${action.depositId.toString()}:${action.user}:${action.hubAsset}:${action.amount.toString()}`;
         case "borrow":
         case "withdraw":
             return `${action.kind}:${action.intentId}:${action.user}:${action.hubAsset}:${action.amount.toString()}:${action.fee.toString()}:${action.relayer}`;

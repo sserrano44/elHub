@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "updatedAt": "2026-02-25T05:26:32.795Z",
+  "uups": {
+    "hub.tokenRegistry": {
+      "proxy": "0xb854b3ccefd82e31ea9e05b54e5f70ec3793f7ed",
+      "implementation": "0xcb027d54268cc12379cc3e54a849e86fd20258d8",
+      "runtimeBytecodeHash": "0x4056b63039930ad5c6760d9893b005fb71d3f4f939e430349524215ae898e54c",
+      "deployedAt": "2026-02-25T03:49:24.600Z",
+      "lastTxHash": "0x5ba7a2487be1914d307380b95bca56f596b8e01d9e069ff2bc59948d1c359279",
+      "upgradedAt": "2026-02-25T05:21:37.408Z"
+    },
+    "hub.rateModel": {
+      "proxy": "0xf261c78259a70ff12677518bb12c3edb4ffbd72b",
+      "implementation": "0x6886e9a13186fd8c62532fb03a0ad8bbd5ce84ea",
+      "runtimeBytecodeHash": "0xae72961c08fa2f83777e5ff820e7f9fc02cbc95bdb88c6b7d5dad649012eb235",
+      "deployedAt": "2026-02-25T03:49:35.505Z",
+      "lastTxHash": "0x5a492f545869ca8277b6d6bc71e0aa2d31b19bf9975256f72d9d9d5b5fc4fe79",
+      "upgradedAt": "2026-02-25T05:21:45.133Z"
+    },
+    "hub.moneyMarket": {
+      "proxy": "0x7071c78ccef5dde5209bf03a938ebd2c1ab06d59",
+      "implementation": "0x05df3951f1f30e9b48d5b8539efa2e51c8f63efd",
+      "runtimeBytecodeHash": "0x4fc1a5233e4eb4b472aceed9f9db41a0061c9bf924a1efd5d58ac6a035fc6792",
+      "deployedAt": "2026-02-25T03:49:43.956Z",
+      "lastTxHash": "0xe65e60fc607aadf55090d4c37703b97e62bfa7d86588734b43d2887942a679a8",
+      "upgradedAt": "2026-02-25T05:21:53.529Z"
+    },
+    "hub.riskManager": {
+      "proxy": "0x36cab291a1887fa9470370966ad3b599413c3f4b",
+      "implementation": "0xf3ce7266deddd57d7e43b15a85d031481d5af471",
+      "runtimeBytecodeHash": "0x1b2fb796ba4ac02e0dd80413c34913f4157919bab73c2faf880ec204cce086c7",
+      "deployedAt": "2026-02-25T03:49:52.391Z",
+      "lastTxHash": "0x3078588240b1b9ffde3fad8698398389475badda0ecc3ae3bc97fad16c873d59",
+      "upgradedAt": "2026-02-25T05:22:01.881Z"
+    },
+    "hub.intentInbox": {
+      "proxy": "0x1662dfdfbb4458ef4ae3e657e468f9af3df38f68",
+      "implementation": "0xcef92d1c688894a34155e3145df83a7fe5c800b0",
+      "runtimeBytecodeHash": "0x0f6ea17b30f879cacb8b38dbef146f52b1eb6ed6783f133e95bb7f5481d4a602",
+      "deployedAt": "2026-02-25T03:50:00.370Z",
+      "lastTxHash": "0xb5f3642ef95a73310f535d619a00d4c1fa3a6a243d1a26d5786614c2d59a0c2d",
+      "upgradedAt": "2026-02-25T05:22:09.627Z"
+    },
+    "hub.lockManager": {
+      "proxy": "0xea4235260646f8708236c9f6c609c8a812b4a73f",
+      "implementation": "0x714fbbb7aac044aa4e92bf2ed86c017b4f336ffe",
+      "runtimeBytecodeHash": "0x5b208098a7377fd9678ab2858a0f7263099783da2b08e15f761c6333acaae01b",
+      "deployedAt": "2026-02-25T03:50:08.120Z",
+      "lastTxHash": "0x04daab5f0e62be72ff5c936d34465ef4a80122bc71bb3fb47cb78ee7f12358d0",
+      "upgradedAt": "2026-02-25T05:22:17.307Z"
+    },
+    "hub.custody": {
+      "proxy": "0xed715cbbcc701e4f6577a9137843279b91c2e8f9",
+      "implementation": "0xdb367d4a22dcbbbcfc77dba63ecc7805122344a4",
+      "runtimeBytecodeHash": "0x597bd4b75da5f0c8304a741ad38d13dd1f7c523262baa83cc7faff92a8b2afd7",
+      "deployedAt": "2026-02-25T03:50:16.006Z",
+      "lastTxHash": "0x22508070e7bae86fcc6ecfb751f267cd6bb9c0b0d134d5103f8a9720428a24c4",
+      "upgradedAt": "2026-02-25T05:22:24.783Z"
+    },
+    "hub.groth16VerifierAdapter": {
+      "proxy": "0xed86c8d357a298446fb14cdd6c9c124eb74ca935",
+      "implementation": "0xe99f654f42e99bdf27d30eca700ec8b35e18a807",
+      "runtimeBytecodeHash": "0xf794c32f0d000ada4e47461c8ec1413bf752ecc72bd61a754015a1c2407b5745",
+      "deployedAt": "2026-02-25T03:50:23.642Z",
+      "lastTxHash": "0xb69aae2a03607039cd568933ffaff4e028f689c4a3d1d99fd76362e9e97f06b1",
+      "upgradedAt": "2026-02-25T05:22:29.566Z"
+    },
+    "hub.verifier": {
+      "proxy": "0x3d185f8be731bb371168b43c42d3cb14031056d1",
+      "implementation": "0x496e393d9f144c1c3c7c107a117b39075c9cf139",
+      "runtimeBytecodeHash": "0xfc5559b84c55780cd6b7384fcba06f203dc5b9804c6409622dea4515b6199fe3",
+      "deployedAt": "2026-02-25T03:50:32.398Z",
+      "lastTxHash": "0xd54f0d4c558230c389274f30a324d5321104059a7c9743abbf05b2be5566ac78",
+      "upgradedAt": "2026-02-25T05:22:37.588Z"
+    },
+    "hub.settlement": {
+      "proxy": "0x9e1efe0b693d71b880f2f962ff08a56c40cfaf4e",
+      "implementation": "0x6e03c4b6ce33eadf23106e2e80bb39c3553a5ed6",
+      "runtimeBytecodeHash": "0x315895d4b55befc038447bdc3882e305f2954e17a730b7c095632780bf7bd3d1",
+      "deployedAt": "2026-02-25T03:50:40.211Z",
+      "lastTxHash": "0x90599cef38ca296ac8696227e978c194013fefe12f284004d4de0ea51d7fc897",
+      "upgradedAt": "2026-02-25T05:22:45.666Z"
+    },
+    "hub.depositProofBackend": {
+      "proxy": "0x7e258e572bb9bc43a259c9d4209d9f7230465941",
+      "implementation": "0x8d794862658874d36e9e495c04b30fa0625b4ca5",
+      "runtimeBytecodeHash": "0x49f99bc0a5f493ff58a01a13bba3fc5c6a6ed7a6a5b7476c65073efd237b4a4f",
+      "deployedAt": "2026-02-25T03:51:03.862Z",
+      "lastTxHash": "0xf008933d899b4fe3b8e3b6dc82b9d6e71ddf6a92a2d9387ed0a5b87760641d0b",
+      "upgradedAt": "2026-02-25T05:23:01.589Z"
+    },
+    "hub.borrowFillProofBackend": {
+      "proxy": "0x05c39f6a527c9b9ad11c935a0e750f14e38b8599",
+      "implementation": "0x250dff763451989f3fdd02b553544b95cf7cabac",
+      "runtimeBytecodeHash": "0x44f31d5974544d388f36606377af1384cf57df6bd0e6878bf5f90f9fdc6ea7b9",
+      "deployedAt": "2026-02-25T03:51:16.206Z",
+      "lastTxHash": "0x46521c8b58992392200d30415abb6e3d44f0eacc604d4d715a44ea2804ea0fb4",
+      "upgradedAt": "2026-02-25T05:23:15.393Z"
+    },
+    "hub.hubAcrossBorrowFinalizer": {
+      "proxy": "0xa810dae2154a6b49916ab8fd035c492210c8130b",
+      "implementation": "0xd168b6c83065fda7f0dbb361c7c604084232d787",
+      "runtimeBytecodeHash": "0x04b2310b4b00fad9ca64060af2d72b04a9e5d8a9e46d85077ae4222968a16ede",
+      "deployedAt": "2026-02-25T03:51:28.395Z",
+      "lastTxHash": "0xf7c4dce23030685c86a7a39c6dace2bf95a79a6faf71151da4f36ace5ab02054",
+      "upgradedAt": "2026-02-25T05:23:23.608Z"
+    },
+    "hub.hubAcrossBorrowDispatcher": {
+      "proxy": "0xfc36996a0aa3cb983541fcc99a0f4289222219f3",
+      "implementation": "0x17ed5c5ae716907ce118ce2c793c5f764a2e1e43",
+      "runtimeBytecodeHash": "0xc9e59d3ae17d965c75552581423d19ffee7c943425a16b2606023fcc17d56d7e",
+      "deployedAt": "2026-02-25T03:51:36.322Z",
+      "lastTxHash": "0x258845f4d5bee8ad0983c9060d047a6963a39d725ff41625918018958163a252",
+      "upgradedAt": "2026-02-25T05:23:31.623Z"
+    },
+    "hub.hubAcrossReceiver": {
+      "proxy": "0xad7969d6942424076216ba83e11b7bdedcbeb09d",
+      "implementation": "0x16d479f2f8611801259efef0355e6fd40863fb2e",
+      "runtimeBytecodeHash": "0x5f85a4821e178b91fcf00ca9eb6bf62f2698062468aae754b238fd2a550e14ba",
+      "deployedAt": "2026-02-25T03:51:44.329Z",
+      "lastTxHash": "0xc10f5ff75823640a9c13d1370cbb7664476a01eeeeb90a4cedcce2d38e5abec5",
+      "upgradedAt": "2026-02-25T05:23:41.762Z"
+    },
+    "spoke.worldchain.portal": {
+      "proxy": "0xd57b2a96216c796c8f5c7ae715d171446f86d206",
+      "implementation": "0x00defe6758b188ba5efc9612dea7dc704afce76d",
+      "runtimeBytecodeHash": "0x8bfd6ed21b4e3298c1c91f57f54d01275893677b41d5571cced51495b8cbcec9",
+      "deployedAt": "2026-02-25T03:51:56.718Z",
+      "lastTxHash": "0x98aac2d8967c31c2a568bd914832a8ee388d022128713d1ef68e88ec1c0c8aa0",
+      "upgradedAt": "2026-02-25T05:23:54.103Z"
+    },
+    "spoke.worldchain.borrowReceiver": {
+      "proxy": "0x9cccac5b17652ee2734e27cec5a50ffec4fa3546",
+      "implementation": "0x63693e6eedc8296ee1d28a7a0865e31a3cc0125b",
+      "runtimeBytecodeHash": "0x330eb88f6433b95c03288d4e0a2672570f2e2145f78af8d133b2b1689f2bc76e",
+      "deployedAt": "2026-02-25T03:52:05.771Z",
+      "lastTxHash": "0xc97f2c8aa54024d4ec1270b70099b6422e840ed606edd1368a8deb235397ff09",
+      "upgradedAt": "2026-02-25T05:24:06.104Z"
+    },
+    "spoke.worldchain.bridgeAdapter": {
+      "proxy": "0x8fa9700bae8660eb1843a8a56a023585cf80a1b0",
+      "implementation": "0xf0b2a289abe1d2c619be27cdb6302697e2423dda",
+      "runtimeBytecodeHash": "0xf6f225e98cbcaf5761a2bf31fd7d5d1a42c5f6cde63217c369177dd1f7501526",
+      "deployedAt": "2026-02-25T03:52:17.865Z",
+      "lastTxHash": "0x1a1b2694c591c49456381211cad1751085ac5320805b6967a03fd95f1cbfcebf",
+      "upgradedAt": "2026-02-25T05:24:18.137Z"
+    },
+    "spoke.bsc.portal": {
+      "proxy": "0xd57b2a96216c796c8f5c7ae715d171446f86d206",
+      "implementation": "0x0a57ad839831da1435995f033e7c28f3cf8fd59f",
+      "runtimeBytecodeHash": "0x8bfd6ed21b4e3298c1c91f57f54d01275893677b41d5571cced51495b8cbcec9",
+      "deployedAt": "2026-02-25T03:52:52.489Z",
+      "lastTxHash": "0x680f385199a21f96ab10672f407103757af32cd01df3a92e531babac95b1e9ec",
+      "upgradedAt": "2026-02-25T05:24:54.832Z"
+    },
+    "spoke.bsc.borrowReceiver": {
+      "proxy": "0x9cccac5b17652ee2734e27cec5a50ffec4fa3546",
+      "implementation": "0xaa0b15ee833af82ccfa85e3214e7df078b0bbce9",
+      "runtimeBytecodeHash": "0x330eb88f6433b95c03288d4e0a2672570f2e2145f78af8d133b2b1689f2bc76e",
+      "deployedAt": "2026-02-25T03:52:58.879Z",
+      "lastTxHash": "0x39920dc2830dacf64d09b44dd11003f63739cfeabb51e28b45c0d34e9382cbea",
+      "upgradedAt": "2026-02-25T05:24:58.522Z"
+    },
+    "spoke.bsc.bridgeAdapter": {
+      "proxy": "0x8fa9700bae8660eb1843a8a56a023585cf80a1b0",
+      "implementation": "0x30a73844d1616884983af06fdc41181a2ce1967f",
+      "runtimeBytecodeHash": "0xf6f225e98cbcaf5761a2bf31fd7d5d1a42c5f6cde63217c369177dd1f7501526",
+      "deployedAt": "2026-02-25T03:53:01.596Z",
+      "lastTxHash": "0x9e71e651d8cd80035c60b4a125ed5f03625fbb87ad6552091d8180c5b80557d1",
+      "upgradedAt": "2026-02-25T05:25:02.207Z"
+    }
+  },
+  "singletons": {
+    "hub.chainlinkOracle": {
+      "address": "0x8898656dfc111c252d344f4676511e493733746d",
+      "runtimeBytecodeHash": "0xe67b41e31233e35f7932cde82e74404eda7258c6532aab98c742066d7ae664dd",
+      "lastTxHash": "0x75590d1d42c8684eed6c98a87b7271a94807282dff57bb89b0819dac5eb8a0ae",
+      "updatedAt": "2026-02-25T03:49:28.446Z"
+    },
+    "hub.lightClientVerifierAdapter": {
+      "address": "0xe5d4b34b6e39d300f7f1a458d85c9dd76dd1dd63",
+      "runtimeBytecodeHash": "0xa5d0bb3bd8c581beda5cd398b07a2c0a2dbd97aa2b132a2625ac92611e3f7822",
+      "lastTxHash": "0x092369d0e8e7c4994ead4aadae6d575f917682a87e53e44e2282bf4e8238e0fb",
+      "updatedAt": "2026-02-25T03:50:44.363Z"
+    },
+    "hub.acrossDepositEventVerifierAdapter": {
+      "address": "0xb8bf7ff8b5f7f8e132adac36dc765b7d7793c248",
+      "runtimeBytecodeHash": "0xc587a8159e856648fa078dc132caeb8740a9d9f4c13740721df9c7f0eb18a19f",
+      "lastTxHash": "0x516460e9da6092d75a9452317d7437feabd21f6e16e32b9c1a94697339ad22f1",
+      "updatedAt": "2026-02-25T03:50:48.049Z"
+    },
+    "hub.acrossBorrowFillEventVerifierAdapter": {
+      "address": "0x93db5644f54e3557081a65b0401ee159540a6ca6",
+      "runtimeBytecodeHash": "0x7660e458b2b11d46f68e2e8260f47b333285b3828e7838d30a65d09161fe08af",
+      "lastTxHash": "0x63ca488dbead00da67e69b19b6913ea8749f943da34f75998f051bcc18011b66",
+      "updatedAt": "2026-02-25T03:50:52.654Z"
+    },
+    "hub.depositProofVerifier": {
+      "address": "0x494ee80c4baf8f90bbd68a84452f3b9ef09dd875",
+      "runtimeBytecodeHash": "0x0e2235c539bc9196840724b6938e4455927bf78b9239f3ee8b865604174514b0",
+      "lastTxHash": "0x42927ea02d10e49b94957f03a7f47835f850c0cdef1bf4f02a7f7410a19632ea",
+      "updatedAt": "2026-02-25T05:23:05.481Z"
+    },
+    "hub.borrowFillProofVerifier": {
+      "address": "0xf05e8b9046421f1fde55a997582020be94270b74",
+      "runtimeBytecodeHash": "0x38b9ba83e75de735db30c378f5aba60cf8d8607b9acc0701337d4d7cca4f2ead",
+      "lastTxHash": "0x2e87646a844de67bd3e8ac3302197128c630746b48f0bb1df1eb235eb5780e63",
+      "updatedAt": "2026-02-25T05:23:17.902Z"
+    }
+  },
+  "metadata": {}
+}

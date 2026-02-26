@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Constants} from "../libraries/Constants.sol";
 import {DataTypes} from "../libraries/DataTypes.sol";
 import {ITokenRegistry} from "../interfaces/ITokenRegistry.sol";
@@ -10,14 +12,17 @@ import {IHubLockManager} from "../interfaces/IHubLockManager.sol";
 import {IHubRiskManager} from "../interfaces/IHubRiskManager.sol";
 import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 
-contract HubRiskManager is Ownable, IHubRiskManager {
+contract HubRiskManager is Ownable, Initializable, UUPSUpgradeable, IHubRiskManager {
+    uint256 internal constant DEFAULT_MIN_ORACLE_PRICE_E8 = 1;
+    uint256 internal constant DEFAULT_MAX_ORACLE_PRICE_E8 = type(uint256).max;
+
     ITokenRegistry public immutable tokenRegistry;
     IHubMoneyMarket public immutable moneyMarket;
     IPriceOracle public immutable oracle;
 
     address public lockManager;
-    uint256 public minOraclePriceE8 = 1;
-    uint256 public maxOraclePriceE8 = type(uint256).max;
+    uint256 public minOraclePriceE8;
+    uint256 public maxOraclePriceE8;
 
     mapping(address => DataTypes.RiskParams) public riskParams;
 
@@ -43,7 +48,19 @@ contract HubRiskManager is Ownable, IHubRiskManager {
         tokenRegistry = tokenRegistry_;
         moneyMarket = moneyMarket_;
         oracle = oracle_;
+        minOraclePriceE8 = DEFAULT_MIN_ORACLE_PRICE_E8;
+        maxOraclePriceE8 = DEFAULT_MAX_ORACLE_PRICE_E8;
+        _disableInitializers();
     }
+
+    function initializeProxy(address owner_) external initializer {
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        _transferOwnership(owner_);
+        minOraclePriceE8 = DEFAULT_MIN_ORACLE_PRICE_E8;
+        maxOraclePriceE8 = DEFAULT_MAX_ORACLE_PRICE_E8;
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     function setLockManager(address lockManager_) external onlyOwner {
         if (lockManager_ == address(0)) revert InvalidLockManager(lockManager_);

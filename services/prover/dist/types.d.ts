@@ -1,5 +1,6 @@
 export type SupplyCreditAction = {
     kind: "supply";
+    sourceChainId: bigint;
     depositId: bigint;
     user: `0x${string}`;
     hubAsset: `0x${string}`;
@@ -7,6 +8,7 @@ export type SupplyCreditAction = {
 };
 export type RepayCreditAction = {
     kind: "repay";
+    sourceChainId: bigint;
     depositId: bigint;
     user: `0x${string}`;
     hubAsset: `0x${string}`;

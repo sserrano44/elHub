@@ -26,6 +26,7 @@ function makeIntent(partial?: Partial<IntentLifecycle>): IntentLifecycle {
 
 function makeDeposit(partial?: Partial<DepositInput>): DepositInput {
   return {
+    sourceChainId: 8453,
     depositId: 42,
     user: "0x1111111111111111111111111111111111111111",
     intentType: IntentType.SUPPLY,
@@ -118,7 +119,7 @@ function runSharedStoreContract(name: string, createStore: () => IndexerStore) {
       bridgeTx: "0x5678"
     });
 
-    const fromGet = store.getDeposit(42);
+    const fromGet = store.getDeposit(8453, 42);
     assert.ok(fromGet);
     assert.equal(fromGet.status, "bridged");
   });

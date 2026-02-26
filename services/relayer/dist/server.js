@@ -3,9 +3,9 @@ import path from "node:path";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import { z } from "zod";
-import { createPublicClient, createWalletClient, decodeAbiParameters, defineChain, encodeAbiParameters, http, keccak256, parseAbi, parseAbiItem } from "viem";
+import { createPublicClient, createWalletClient, decodeAbiParameters, decodeEventLog, defineChain, encodeAbiParameters, http, keccak256, parseAbi, parseAbiItem } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { HubLockManagerAbi, MockERC20Abi } from "@elhub/abis";
+import { HubLockManagerAbi } from "@elhub/abis";
 var IntentType;
 (function (IntentType) {
     IntentType[IntentType["SUPPLY"] = 1] = "SUPPLY";
@@ -13,8 +13,16 @@ var IntentType;
     IntentType[IntentType["BORROW"] = 3] = "BORROW";
     IntentType[IntentType["WITHDRAW"] = 4] = "WITHDRAW";
 })(IntentType || (IntentType = {}));
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const NETWORKS = {
+    ethereum: { envPrefix: "ETHEREUM", defaultChainId: 1 },
+    base: { envPrefix: "BASE", defaultChainId: 8453 },
+    bsc: { envPrefix: "BSC", defaultChainId: 56 },
+    worldchain: { envPrefix: "WORLDCHAIN", defaultChainId: 480 }
+};
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
+const isLiveMode = (process.env.LIVE_MODE ?? "0") !== "0";
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN ?? "*";
 const internalAuthSecret = process.env.INTERNAL_API_AUTH_SECRET
     ?? (isProduction ? "" : "dev-internal-auth-secret");
@@ -40,17 +48,25 @@ app.use((req, res, next) => {
     next();
 });
 const port = Number(process.env.RELAYER_PORT ?? 3040);
-const hubRpc = process.env.HUB_RPC_URL ?? "http://127.0.0.1:8545";
-const spokeRpc = process.env.SPOKE_RPC_URL ?? "http://127.0.0.1:9545";
-const hubChainId = BigInt(process.env.HUB_CHAIN_ID ?? "8453");
-const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID ?? "480");
+const hubNetwork = normalizeNetwork(process.env.HUB_NETWORK ?? "ethereum");
+const spokeNetwork = resolveSpokeNetwork(process.env.SPOKE_NETWORKS ?? process.env.SPOKE_NETWORK ?? "base");
+const hubConfig = NETWORKS[hubNetwork];
+const spokeConfig = NETWORKS[spokeNetwork];
+const hubRpc = process.env.HUB_RPC_URL ?? resolveNetworkRpc(hubNetwork, "http://127.0.0.1:8545");
+const spokeRpc = process.env.SPOKE_RPC_URL ?? resolveNetworkRpc(spokeNetwork, "http://127.0.0.1:9545");
+const hubChainId = BigInt(process.env.HUB_CHAIN_ID
+    ?? process.env[`${hubConfig.envPrefix}_CHAIN_ID`]
+    ?? String(hubConfig.defaultChainId));
+const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID
+    ?? process.env[`${spokeConfig.envPrefix}_CHAIN_ID`]
+    ?? String(spokeConfig.defaultChainId));
 const lockManagerAddress = process.env.HUB_LOCK_MANAGER_ADDRESS;
 const custodyAddress = process.env.HUB_CUSTODY_ADDRESS;
 const acrossReceiverAddress = process.env.HUB_ACROSS_RECEIVER_ADDRESS;
 const acrossBorrowDispatcherAddress = process.env.HUB_ACROSS_BORROW_DISPATCHER_ADDRESS;
 const acrossBorrowFinalizerAddress = process.env.HUB_ACROSS_BORROW_FINALIZER_ADDRESS;
-const spokeAcrossSpokePoolAddress = process.env.SPOKE_ACROSS_SPOKE_POOL_ADDRESS;
-const spokeBorrowReceiverAddress = process.env.SPOKE_BORROW_RECEIVER_ADDRESS;
+const spokeAcrossSpokePoolAddress = resolveSpokeAddress(spokeConfig.envPrefix, "ACROSS_SPOKE_POOL_ADDRESS");
+const spokeBorrowReceiverAddress = resolveSpokeAddress(spokeConfig.envPrefix, "BORROW_RECEIVER_ADDRESS");
 const relayerKey = process.env.RELAYER_PRIVATE_KEY;
 const indexerApi = process.env.INDEXER_API_URL ?? "http://127.0.0.1:3030";
 const proverApi = process.env.PROVER_API_URL ?? "http://127.0.0.1:3050";
@@ -62,6 +78,9 @@ const relayerHubFinalityBlocks = BigInt(process.env.RELAYER_HUB_FINALITY_BLOCKS 
 const apiRateWindowMs = Number(process.env.API_RATE_WINDOW_MS ?? "60000");
 const apiRateMaxRequests = Number(process.env.API_RATE_MAX_REQUESTS ?? "1200");
 const rateBuckets = new Map();
+const acrossApiBaseUrl = process.env.ACROSS_API_URL ?? "https://app.across.to/api";
+const acrossAllowUnmatchedDecimals = (process.env.ACROSS_ALLOW_UNMATCHED_DECIMALS ?? "1") !== "0";
+const acrossQuoteMaxAttempts = Number(process.env.ACROSS_QUOTE_MAX_ATTEMPTS ?? "3");
 const spokeToHub = JSON.parse(process.env.SPOKE_TO_HUB_TOKEN_MAP ?? "{}");
 if (!lockManagerAddress
     || !custodyAddress
@@ -97,18 +116,29 @@ const acrossReceiverAbi = parseAbi([
     "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
 const acrossBorrowDispatcherAbi = parseAbi([
-    "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset) returns (bytes32)"
+    "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset,(uint256 outputAmount,uint32 quoteTimestamp,uint32 fillDeadline,uint32 exclusivityDeadline,address exclusiveRelayer) quote) returns (bytes32)"
 ]);
 const acrossBorrowFinalizerAbi = parseAbi([
     "function finalizeBorrowFill(bytes proof,(uint256 sourceChainId,bytes32 intentId,uint8 intentType,address user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
-const spokeV3FundsDepositedEvent = parseAbiItem("event V3FundsDeposited(uint256 indexed depositId, address indexed depositor, address indexed recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes message, address caller)");
+const erc20Abi = parseAbi([
+    "function approve(address spender,uint256 amount) returns (bool)",
+    "function balanceOf(address account) view returns (uint256)"
+]);
+const tokenRegistryReadAbi = parseAbi([
+    "function getConfigByHub(address hubToken) view returns ((address hubToken,address spokeToken,uint8 decimals,(uint256 ltvBps,uint256 liquidationThresholdBps,uint256 liquidationBonusBps,uint256 supplyCap,uint256 borrowCap) risk,bytes32 bridgeAdapterId,bool enabled))",
+    "function getSpokeDecimalsByHub(uint256 destinationChainId,address hubToken) view returns (uint8)"
+]);
+const spokeV3FundsDepositedEvent = parseAbiItem("event FundsDeposited(bytes32 inputToken, bytes32 outputToken, uint256 inputAmount, uint256 outputAmount, uint256 indexed destinationChainId, uint256 indexed depositId, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes32 indexed depositor, bytes32 recipient, bytes32 exclusiveRelayer, bytes message)");
 const spokeBorrowFillRecordedEvent = parseAbiItem("event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 destinationChainId,address hubFinalizer,bytes32 messageHash)");
 const hubPendingDepositRecordedEvent = parseAbiItem("event PendingDepositRecorded(bytes32 indexed pendingId,uint256 indexed sourceChainId,uint256 indexed depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,address tokenReceived,uint256 amountReceived,address relayer,bytes32 messageHash)");
 const hubBridgedDepositRegisteredEvent = parseAbiItem("event BridgedDepositRegistered(uint256 indexed depositId, uint8 indexed intentType, address indexed user, address hubAsset, uint256 amount, uint256 originChainId, bytes32 originTxHash, uint256 originLogIndex, bytes32 attestationKey)");
 const trackingPath = process.env.RELAYER_TRACKING_PATH ?? path.join(process.cwd(), "data", "relayer-tracking.json");
 const tracking = loadTracking(trackingPath);
 let isPollingCanonicalBridge = false;
+let cachedTokenRegistryAddress;
+const hubDecimalsCache = new Map();
+const spokeDecimalsCache = new Map();
 const submitSchema = z.object({
     intent: z.object({
         intentType: z.number().int().min(1).max(4),
@@ -177,6 +207,22 @@ app.post("/intent/submit", async (req, res) => {
             return;
         }
         const intentId = rawIntentId(intent);
+        const hubAsset = spokeToHub[intent.outputToken.toLowerCase()];
+        if (!hubAsset) {
+            throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
+        }
+        const previewLockAmount = await previewHubLockAmount(intent.outputChainId, hubAsset, intent.amount);
+        if (previewLockAmount <= 0n) {
+            throw new Error(`preview lock amount must be > 0 for intent ${intentId}`);
+        }
+        let acrossQuote = await resolveBorrowDispatchQuote({
+            originChainId: hubChainId,
+            destinationChainId: intent.outputChainId,
+            inputToken: hubAsset,
+            outputToken: intent.outputToken,
+            amount: previewLockAmount,
+            recipient: spokeBorrowReceiverAddress
+        });
         await upsertIntent(intentId, intent, "pending_lock", {
             relayerFee: relayerFee.toString(),
             relayer: relayerAccount.address
@@ -188,38 +234,83 @@ app.post("/intent/submit", async (req, res) => {
             args: [intent, signature],
             account: relayerAccount
         });
-        await hubPublic.waitForTransactionReceipt({ hash: lockTx });
-        const hubAsset = spokeToHub[intent.outputToken.toLowerCase()];
-        if (!hubAsset) {
-            throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
+        const lockReceipt = await hubPublic.waitForTransactionReceipt({ hash: lockTx });
+        let lockAmount = extractLockAmountFromReceipt(lockReceipt, intentId);
+        if (lockAmount === undefined) {
+            try {
+                lockAmount = await fetchLockAmount(intentId, lockReceipt.blockNumber);
+            }
+            catch (error) {
+                if (!isUnknownBlockReadError(error))
+                    throw error;
+                lockAmount = await fetchLockAmount(intentId);
+            }
         }
-        await hubWallet.writeContract({
-            abi: MockERC20Abi,
+        if (lockAmount <= 0n) {
+            throw new Error(`lock amount must be > 0 for intent ${intentId}`);
+        }
+        if (lockAmount !== previewLockAmount) {
+            acrossQuote = await resolveBorrowDispatchQuote({
+                originChainId: hubChainId,
+                destinationChainId: intent.outputChainId,
+                inputToken: hubAsset,
+                outputToken: intent.outputToken,
+                amount: lockAmount,
+                recipient: spokeBorrowReceiverAddress
+            });
+        }
+        const relayerHubBalance = await hubPublic.readContract({
+            abi: erc20Abi,
             address: hubAsset,
-            functionName: "approve",
-            args: [acrossBorrowDispatcherAddress, intent.amount],
-            account: relayerAccount
+            functionName: "balanceOf",
+            args: [relayerAccount.address]
         });
-        const dispatchTx = await hubWallet.writeContract({
-            abi: acrossBorrowDispatcherAbi,
-            address: acrossBorrowDispatcherAddress,
-            functionName: "dispatchBorrowFill",
-            args: [
-                intentId,
-                intent.intentType,
-                intent.user,
-                intent.recipient,
-                intent.outputToken,
-                intent.amount,
-                intent.outputChainId,
-                relayerFee,
-                intent.maxRelayerFee,
-                hubAsset
-            ],
-            account: relayerAccount
-        });
-        await hubPublic.waitForTransactionReceipt({ hash: dispatchTx });
-        await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx });
+        if (relayerHubBalance < lockAmount) {
+            throw new Error(`insufficient relayer hub liquidity for ${hubAsset}: need ${lockAmount.toString()} have ${relayerHubBalance.toString()}`);
+        }
+        let dispatchTx;
+        try {
+            await hubWallet.writeContract({
+                abi: erc20Abi,
+                address: hubAsset,
+                functionName: "approve",
+                args: [acrossBorrowDispatcherAddress, lockAmount],
+                account: relayerAccount
+            });
+            dispatchTx = await hubWallet.writeContract({
+                abi: acrossBorrowDispatcherAbi,
+                address: acrossBorrowDispatcherAddress,
+                functionName: "dispatchBorrowFill",
+                args: [
+                    intentId,
+                    intent.intentType,
+                    intent.user,
+                    intent.recipient,
+                    intent.outputToken,
+                    lockAmount,
+                    intent.outputChainId,
+                    relayerFee,
+                    intent.maxRelayerFee,
+                    hubAsset,
+                    acrossQuote
+                ],
+                account: relayerAccount
+            });
+            await hubPublic.waitForTransactionReceipt({ hash: dispatchTx });
+        }
+        catch (dispatchError) {
+            const cancelTx = await cancelLockBestEffort(intentId);
+            await updateIntentStatus(intentId, "failed", {
+                lockTx,
+                lockAmount: lockAmount.toString(),
+                lockCancelTx: cancelTx,
+                error: dispatchError.message
+            }).catch((statusError) => {
+                console.warn("Failed to persist intent failure status", statusError);
+            });
+            throw dispatchError;
+        }
+        await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx, lockAmount: lockAmount.toString() });
         auditLog(req, "submit_ok", {
             intentId,
             intentType: intent.intentType,
@@ -327,8 +418,8 @@ async function pollSpokeDeposits() {
 }
 async function handleAcrossDepositLog(log, finalizedToBlock) {
     const message = log.args.message;
-    const outputToken = log.args.outputToken;
-    const recipient = log.args.recipient;
+    const outputToken = bytes32ToAddress(log.args.outputToken);
+    const recipient = bytes32ToAddress(log.args.recipient);
     const outputAmount = asBigInt(log.args.outputAmount);
     const destinationChainId = asBigInt(log.args.destinationChainId);
     const originTxHash = log.transactionHash;
@@ -371,7 +462,7 @@ async function handleAcrossDepositLog(log, finalizedToBlock) {
         console.warn(`Skipping deposit ${depositId.toString()} due to spoke->hub token map mismatch`);
         return;
     }
-    const existing = await fetchDeposit(depositId);
+    const existing = await fetchDeposit(sourceChainId, depositId);
     if (existing?.status === "settled" || existing?.status === "bridged") {
         return;
     }
@@ -385,6 +476,7 @@ async function handleAcrossDepositLog(log, finalizedToBlock) {
     const messageHash = keccak256(message);
     const nextStatus = existing?.status === "pending_fill" ? "pending_fill" : "initiated";
     await postInternal(indexerApi, "/internal/deposits/upsert", {
+        sourceChainId: Number(sourceChainId),
         depositId: Number(depositId),
         user,
         intentType: intentType,
@@ -497,8 +589,9 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
             console.warn(`Skipping outbound fill ${intentId} due to spoke token mismatch`);
             return;
         }
-        if (existing.amount !== amount.toString()) {
-            console.warn(`Skipping outbound fill ${intentId} due to amount mismatch`);
+        const lockedAmount = asBigInt(existing.amount);
+        if (lockedAmount === undefined || amount > lockedAmount) {
+            console.warn(`Skipping outbound fill ${intentId} due to amount exceeding lock`);
             return;
         }
     }
@@ -507,6 +600,19 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
     const sourceReceiptsRoot = asHexString(sourceBlock.receiptsRoot);
     if (!sourceBlockHash || !sourceReceiptsRoot) {
         console.warn(`Skipping outbound fill ${intentId} due to missing source block hash/receipts root`);
+        return;
+    }
+    const hubFill = await convertSpokeFillToHubUnits(spokeChainId, hubAsset, amount, fee).catch((error) => {
+        console.warn(`Skipping outbound fill ${intentId} due to conversion failure: ${error.message}`);
+        return undefined;
+    });
+    if (!hubFill || hubFill.amount === 0n || hubFill.fee >= hubFill.amount) {
+        console.warn(`Skipping outbound fill ${intentId} due to invalid hub-unit conversion`);
+        return;
+    }
+    const lockAmount = await fetchLockAmount(intentId).catch(() => undefined);
+    if (lockAmount !== undefined && hubFill.amount > lockAmount) {
+        console.warn(`Skipping outbound fill ${intentId} because converted amount exceeds lock`);
         return;
     }
     const witness = {
@@ -548,8 +654,8 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         intentId,
         user,
         hubAsset,
-        amount: amount.toString(),
-        fee: fee.toString(),
+        amount: hubFill.amount.toString(),
+        fee: hubFill.fee.toString(),
         relayer
     });
     await updateIntentStatus(intentId, "awaiting_settlement", {
@@ -638,7 +744,7 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
         console.warn(`Skipping pending deposit ${depositId.toString()} due to fill mismatch`);
         return;
     }
-    const existing = await fetchDeposit(depositId);
+    const existing = await fetchDeposit(sourceChainId, depositId);
     if (existing?.status === "settled" || existing?.status === "bridged") {
         return;
     }
@@ -671,6 +777,7 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
         return;
     }
     await postInternal(indexerApi, "/internal/deposits/upsert", {
+        sourceChainId: Number(sourceChainId),
         depositId: Number(depositId),
         user,
         intentType: intentType,
@@ -746,7 +853,7 @@ async function handleHubBridgedDepositLog(log, finalizedToBlock) {
     if (intentType !== IntentType.SUPPLY && intentType !== IntentType.REPAY) {
         return;
     }
-    const existing = await fetchDeposit(depositId);
+    const existing = await fetchDeposit(originChainId, depositId);
     if (existing?.status === "settled") {
         return;
     }
@@ -784,6 +891,7 @@ async function handleHubBridgedDepositLog(log, finalizedToBlock) {
         }
     }
     await postInternal(indexerApi, "/internal/deposits/upsert", {
+        sourceChainId: Number(originChainId),
         depositId: Number(depositId),
         user,
         intentType: intentType,
@@ -803,23 +911,159 @@ async function handleHubBridgedDepositLog(log, finalizedToBlock) {
     });
     await enqueueProverAction({
         kind: intentType === IntentType.SUPPLY ? "supply" : "repay",
+        sourceChainId: originChainId.toString(),
         depositId: depositId.toString(),
         user,
         hubAsset,
         amount: amount.toString()
     });
 }
-async function fetchDeposit(depositId) {
-    const existing = await fetch(`${indexerApi}/deposits/${depositId.toString()}`).catch(() => null);
-    if (!existing || !existing.ok)
+async function fetchDeposit(sourceChainId, depositId) {
+    const scoped = await fetch(`${indexerApi}/deposits/${sourceChainId.toString()}/${depositId.toString()}`).catch(() => null);
+    if (scoped?.ok) {
+        return (await scoped.json());
+    }
+    const legacy = await fetch(`${indexerApi}/deposits/${depositId.toString()}`).catch(() => null);
+    if (!legacy || !legacy.ok)
         return undefined;
-    return (await existing.json());
+    return (await legacy.json());
 }
 async function fetchIntent(intentId) {
     const existing = await fetch(`${indexerApi}/intents/${intentId}`).catch(() => null);
     if (!existing || !existing.ok)
         return undefined;
     return (await existing.json());
+}
+async function fetchLockAmount(intentId, blockNumber) {
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const lock = await hubPublic.readContract({
+            abi: HubLockManagerAbi,
+            address: lockManagerAddress,
+            functionName: "locks",
+            args: [intentId],
+            ...(blockNumber !== undefined ? { blockNumber } : {})
+        });
+        const amount = asBigInt(lock.amount
+            ?? (Array.isArray(lock) ? lock[4] : undefined));
+        if (amount !== undefined && amount > 0n) {
+            return amount;
+        }
+        if (amount !== undefined && blockNumber !== undefined) {
+            // Receipt block should already include the lock write, but some RPC backends can lag briefly.
+            await sleep(200 * attempt);
+            continue;
+        }
+        if (amount !== undefined)
+            return amount;
+        await sleep(100 * attempt);
+    }
+    throw new Error(`unable to read lock amount for ${intentId}`);
+}
+async function cancelLockBestEffort(intentId) {
+    try {
+        const cancelTx = await hubWallet.writeContract({
+            abi: HubLockManagerAbi,
+            address: lockManagerAddress,
+            functionName: "cancelLock",
+            args: [intentId],
+            account: relayerAccount
+        });
+        await hubPublic.waitForTransactionReceipt({ hash: cancelTx });
+        return cancelTx;
+    }
+    catch (error) {
+        console.warn(`Failed to cancel active lock ${intentId}`, error);
+        return undefined;
+    }
+}
+function extractLockAmountFromReceipt(receipt, intentId) {
+    for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== lockManagerAddress.toLowerCase())
+            continue;
+        try {
+            const decoded = decodeEventLog({
+                abi: HubLockManagerAbi,
+                data: log.data,
+                topics: log.topics
+            });
+            if (decoded.eventName !== "BorrowLocked" && decoded.eventName !== "WithdrawLocked")
+                continue;
+            const loggedIntentId = asHexString(String(decoded.args.intentId));
+            if (!loggedIntentId || loggedIntentId.toLowerCase() !== intentId.toLowerCase())
+                continue;
+            const amount = asBigInt(decoded.args.amount);
+            if (amount !== undefined)
+                return amount;
+        }
+        catch {
+            continue;
+        }
+    }
+    return undefined;
+}
+async function previewHubLockAmount(outputChainId, hubAsset, outputAmount) {
+    const { hubDecimals, spokeDecimals } = await resolveRouteDecimals(outputChainId, hubAsset);
+    return scaleAmountUnits(outputAmount, spokeDecimals, hubDecimals);
+}
+async function resolveTokenRegistryAddress() {
+    if (cachedTokenRegistryAddress)
+        return cachedTokenRegistryAddress;
+    const tokenRegistry = await hubPublic.readContract({
+        abi: HubLockManagerAbi,
+        address: lockManagerAddress,
+        functionName: "tokenRegistry"
+    });
+    cachedTokenRegistryAddress = tokenRegistry;
+    return tokenRegistry;
+}
+async function resolveRouteDecimals(sourceChainId, hubAsset) {
+    const normalizedHub = hubAsset.toLowerCase();
+    const hubCached = hubDecimalsCache.get(normalizedHub);
+    const spokeCacheKey = `${sourceChainId.toString()}:${normalizedHub}`;
+    const spokeCached = spokeDecimalsCache.get(spokeCacheKey);
+    if (hubCached !== undefined && spokeCached !== undefined) {
+        return { hubDecimals: hubCached, spokeDecimals: spokeCached };
+    }
+    const tokenRegistryAddress = await resolveTokenRegistryAddress();
+    let hubDecimals = hubCached;
+    if (hubDecimals === undefined) {
+        const cfg = await hubPublic.readContract({
+            abi: tokenRegistryReadAbi,
+            address: tokenRegistryAddress,
+            functionName: "getConfigByHub",
+            args: [hubAsset]
+        });
+        const parsed = asNumber(cfg.decimals);
+        if (parsed === undefined) {
+            throw new Error(`unable to decode hub decimals for ${hubAsset}`);
+        }
+        hubDecimals = parsed;
+        hubDecimalsCache.set(normalizedHub, hubDecimals);
+    }
+    let spokeDecimals = spokeCached;
+    if (spokeDecimals === undefined) {
+        const raw = await hubPublic.readContract({
+            abi: tokenRegistryReadAbi,
+            address: tokenRegistryAddress,
+            functionName: "getSpokeDecimalsByHub",
+            args: [sourceChainId, hubAsset]
+        });
+        const parsed = asNumber(raw);
+        if (parsed === undefined) {
+            throw new Error(`unable to decode spoke decimals for chain=${sourceChainId.toString()} hubAsset=${hubAsset}`);
+        }
+        spokeDecimals = parsed;
+        spokeDecimalsCache.set(spokeCacheKey, spokeDecimals);
+    }
+    return { hubDecimals, spokeDecimals };
+}
+async function convertSpokeFillToHubUnits(sourceChainId, hubAsset, amount, fee) {
+    const { hubDecimals, spokeDecimals } = await resolveRouteDecimals(sourceChainId, hubAsset);
+    return {
+        amount: scaleAmountUnits(amount, spokeDecimals, hubDecimals),
+        fee: scaleAmountUnits(fee, spokeDecimals, hubDecimals)
+    };
 }
 async function enqueueProverAction(body) {
     await postInternal(proverApi, "/internal/enqueue", body);
@@ -896,6 +1140,7 @@ async function attemptFinalizePendingDeposit(pendingId, witness, sourceEvidence,
         });
         await hubPublic.waitForTransactionReceipt({ hash: finalizeTx });
         await postInternal(indexerApi, "/internal/deposits/upsert", {
+            sourceChainId: Number(witness.sourceChainId),
             depositId: Number(depositId),
             user,
             intentType,
@@ -957,6 +1202,143 @@ function parseIntent(payload) {
         maxRelayerFee: BigInt(payload.maxRelayerFee),
         nonce: BigInt(payload.nonce),
         deadline: BigInt(payload.deadline)
+    };
+}
+async function resolveBorrowDispatchQuote(params) {
+    const fallback = defaultAcrossQuote(params.amount);
+    if (!isLiveMode)
+        return fallback;
+    const search = new URLSearchParams({
+        originChainId: params.originChainId.toString(),
+        destinationChainId: params.destinationChainId.toString(),
+        inputToken: params.inputToken,
+        outputToken: params.outputToken,
+        amount: params.amount.toString(),
+        recipient: params.recipient
+    });
+    if (acrossAllowUnmatchedDecimals) {
+        search.set("allowUnmatchedDecimals", "true");
+    }
+    // Required on BNB USDC routes to avoid hard-failing with AMOUNT_TOO_LOW and to surface limits/output explicitly.
+    search.set("skipAmountLimit", "true");
+    const url = `${acrossApiBaseUrl.replace(/\/+$/, "")}/suggested-fees?${search.toString()}`;
+    let lastError;
+    for (let attempt = 1; attempt <= acrossQuoteMaxAttempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        try {
+            const res = await fetch(url, { signal: controller.signal });
+            const rawBody = await res.text();
+            if (!res.ok) {
+                const code = parseAcrossErrorCode(rawBody);
+                const failure = new Error(`Across quote HTTP ${res.status}: ${rawBody}`);
+                lastError = failure;
+                if (attempt < acrossQuoteMaxAttempts && (res.status >= 500 || res.status === 429 || code === "AMOUNT_TOO_LOW")) {
+                    await sleep(300 * attempt);
+                    continue;
+                }
+                throw failure;
+            }
+            const payload = parseAcrossPayload(rawBody);
+            const outputAmount = parseAcrossOutputAmount(payload, params.amount);
+            const quoteTimestamp = Number(payload.quoteTimestamp ?? payload.timestamp ?? 0);
+            const fillDeadline = Number(payload.fillDeadline ?? 0);
+            const exclusivityDeadline = Number(payload.exclusivityDeadline ?? 0);
+            const exclusiveRelayer = asAddress(String(payload.exclusiveRelayer ?? ZERO_ADDRESS)) ?? ZERO_ADDRESS;
+            const isAmountTooLow = payload.isAmountTooLow === true;
+            if (outputAmount === undefined) {
+                throw new Error("Across quote missing output amount");
+            }
+            if (outputAmount <= 0n || isAmountTooLow) {
+                const minDeposit = asBigInt(payload.limits?.minDeposit);
+                const relayFee = asBigInt(payload.totalRelayFee?.total);
+                throw new Error(`Across quote amount too low for route amount=${params.amount.toString()} output=${outputAmount.toString()} minDeposit=${(minDeposit ?? 0n).toString()} relayFee=${(relayFee ?? 0n).toString()}`);
+            }
+            if (!Number.isInteger(quoteTimestamp) || quoteTimestamp <= 0) {
+                throw new Error("Across quote missing quoteTimestamp");
+            }
+            if (!Number.isInteger(fillDeadline) || fillDeadline <= quoteTimestamp) {
+                throw new Error("Across quote missing/invalid fillDeadline");
+            }
+            if (!Number.isInteger(exclusivityDeadline) || exclusivityDeadline < 0 || exclusivityDeadline > fillDeadline) {
+                throw new Error("Across quote invalid exclusivityDeadline");
+            }
+            return {
+                outputAmount,
+                quoteTimestamp,
+                fillDeadline,
+                exclusivityDeadline,
+                exclusiveRelayer
+            };
+        }
+        catch (error) {
+            const wrapped = new Error(`Across quote resolution failed: ${error.message}`);
+            lastError = wrapped;
+            if (attempt < acrossQuoteMaxAttempts && isRetryableAcrossQuoteError(error)) {
+                await sleep(300 * attempt);
+                continue;
+            }
+            throw wrapped;
+        }
+        finally {
+            clearTimeout(timeout);
+        }
+    }
+    throw lastError ?? new Error("Across quote resolution failed");
+}
+function parseAcrossOutputAmount(payload, inputAmount) {
+    const direct = asBigInt(payload.outputAmount ?? payload.expectedOutputAmount ?? payload.estimatedFillAmount ?? payload.amountToReceive);
+    if (direct !== undefined)
+        return direct;
+    const totalRelayFee = asBigInt(payload.totalRelayFee?.total
+        ?? payload.fees?.totalRelayFee?.total);
+    if (totalRelayFee !== undefined && totalRelayFee <= inputAmount) {
+        return inputAmount - totalRelayFee;
+    }
+    return undefined;
+}
+function parseAcrossPayload(rawBody) {
+    if (!rawBody)
+        return {};
+    try {
+        const parsed = JSON.parse(rawBody);
+        return typeof parsed === "object" && parsed ? parsed : {};
+    }
+    catch {
+        return {};
+    }
+}
+function parseAcrossErrorCode(rawBody) {
+    const payload = parseAcrossPayload(rawBody);
+    return typeof payload.code === "string" ? payload.code : undefined;
+}
+function isRetryableAcrossQuoteError(error) {
+    const message = String(error?.message ?? "").toLowerCase();
+    return (message.includes("timed out")
+        || message.includes("timeout")
+        || message.includes("aborted")
+        || message.includes("fetch failed")
+        || message.includes("network")
+        || message.includes("502")
+        || message.includes("503")
+        || message.includes("504")
+        || message.includes("429"));
+}
+function isUnknownBlockReadError(error) {
+    const message = String(error?.message ?? "").toLowerCase();
+    return message.includes("unknown block");
+}
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+function defaultAcrossQuote(amount) {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+        outputAmount: amount,
+        quoteTimestamp: now,
+        fillDeadline: now + 2 * 60 * 60,
+        exclusivityDeadline: 0,
+        exclusiveRelayer: ZERO_ADDRESS
     };
 }
 function loadTracking(filePath) {
@@ -1068,6 +1450,30 @@ function asBigInt(value) {
     }
     return undefined;
 }
+function asNumber(value) {
+    if (typeof value === "number" && Number.isInteger(value))
+        return value;
+    const asInt = asBigInt(value);
+    if (asInt === undefined)
+        return undefined;
+    const num = Number(asInt);
+    if (!Number.isInteger(num))
+        return undefined;
+    return num;
+}
+function scaleAmountUnits(amount, fromDecimals, toDecimals) {
+    if (fromDecimals === toDecimals)
+        return amount;
+    if (fromDecimals < 0 || toDecimals < 0 || fromDecimals > 77 || toDecimals > 77) {
+        throw new Error(`unsupported decimals conversion ${fromDecimals}->${toDecimals}`);
+    }
+    const delta = BigInt(Math.abs(fromDecimals - toDecimals));
+    const factor = 10n ** delta;
+    if (fromDecimals > toDecimals) {
+        return amount / factor;
+    }
+    return amount * factor;
+}
 function metadataString(metadata, key) {
     const value = metadata?.[key];
     if (typeof value === "string")
@@ -1089,6 +1495,13 @@ function asAddress(value) {
     if (!value.startsWith("0x") || value.length !== 42)
         return undefined;
     return value;
+}
+function bytes32ToAddress(value) {
+    if (typeof value !== "string")
+        return undefined;
+    if (!value.startsWith("0x") || value.length !== 66)
+        return undefined;
+    return `0x${value.slice(-40)}`;
 }
 function metadataBigInt(metadata, key) {
     const value = metadataString(metadata, key);
@@ -1131,6 +1544,39 @@ function decodeAcrossDepositMessage(message) {
         return undefined;
     }
 }
+function normalizeNetwork(value) {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "mainnet")
+        return "ethereum";
+    if (normalized === "world")
+        return "worldchain";
+    if (normalized === "bnb")
+        return "bsc";
+    if (normalized in NETWORKS)
+        return normalized;
+    throw new Error(`Unsupported network=${value}. Use one of: ${Object.keys(NETWORKS).join(", ")}`);
+}
+function resolveSpokeNetwork(value) {
+    const first = value
+        .split(",")
+        .map((entry) => entry.trim())
+        .find((entry) => entry.length > 0);
+    return normalizeNetwork(first ?? "base");
+}
+function resolveNetworkRpc(network, fallback) {
+    const config = NETWORKS[network];
+    const tenderly = process.env[`${config.envPrefix}_TENDERLY_RPC_URL`];
+    const rpc = process.env[`${config.envPrefix}_RPC_URL`];
+    if (isLiveMode && tenderly) {
+        throw new Error(`LIVE_MODE forbids ${config.envPrefix}_TENDERLY_RPC_URL`);
+    }
+    return rpc ?? tenderly ?? fallback;
+}
+function resolveSpokeAddress(spokeEnvPrefix, suffix) {
+    return (process.env[`SPOKE_${spokeEnvPrefix}_${suffix}`]
+        ?? process.env[`SPOKE_${suffix}`]
+        ?? "");
+}
 function validateStartupConfig() {
     if (!internalAuthSecret) {
         throw new Error("Missing INTERNAL_API_AUTH_SECRET");
@@ -1144,11 +1590,22 @@ function validateStartupConfig() {
     if (isProduction && corsAllowOrigin.trim() === "*") {
         throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in production");
     }
+    if (isLiveMode) {
+        if (corsAllowOrigin.trim() === "*") {
+            throw new Error("CORS_ALLOW_ORIGIN cannot be '*' in LIVE_MODE");
+        }
+        if (internalAuthSecret === "dev-internal-auth-secret") {
+            throw new Error("INTERNAL_API_AUTH_SECRET cannot use dev default in LIVE_MODE");
+        }
+    }
     if (relayerSpokeFinalityBlocks < 0n) {
         throw new Error("RELAYER_SPOKE_FINALITY_BLOCKS cannot be negative");
     }
     if (relayerHubFinalityBlocks < 0n) {
         throw new Error("RELAYER_HUB_FINALITY_BLOCKS cannot be negative");
+    }
+    if (!Number.isInteger(acrossQuoteMaxAttempts) || acrossQuoteMaxAttempts <= 0) {
+        throw new Error("ACROSS_QUOTE_MAX_ATTEMPTS must be a positive integer");
     }
     if (!acrossReceiverAddress) {
         throw new Error("Missing HUB_ACROSS_RECEIVER_ADDRESS");
@@ -1160,10 +1617,10 @@ function validateStartupConfig() {
         throw new Error("Missing HUB_ACROSS_BORROW_FINALIZER_ADDRESS");
     }
     if (!spokeAcrossSpokePoolAddress) {
-        throw new Error("Missing SPOKE_ACROSS_SPOKE_POOL_ADDRESS");
+        throw new Error(`Missing SPOKE_${spokeConfig.envPrefix}_ACROSS_SPOKE_POOL_ADDRESS or SPOKE_ACROSS_SPOKE_POOL_ADDRESS`);
     }
     if (!spokeBorrowReceiverAddress) {
-        throw new Error("Missing SPOKE_BORROW_RECEIVER_ADDRESS");
+        throw new Error(`Missing SPOKE_${spokeConfig.envPrefix}_BORROW_RECEIVER_ADDRESS or SPOKE_BORROW_RECEIVER_ADDRESS`);
     }
 }
 //# sourceMappingURL=server.js.map

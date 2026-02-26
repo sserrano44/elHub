@@ -11,6 +11,7 @@ import {MockLightClientVerifier} from "../src/mocks/MockLightClientVerifier.sol"
 import {MockAcrossBorrowFillEventVerifier} from "../src/mocks/MockAcrossBorrowFillEventVerifier.sol";
 
 contract BorrowFillProofVerifierTest is TestBase {
+    uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
     uint256 internal constant SOURCE_CHAIN_ID = 8453;
     uint256 internal constant SOURCE_BLOCK_NUMBER = 20_001;
 
@@ -149,6 +150,6 @@ contract BorrowFillProofVerifierTest is TestBase {
             inclusionProof: inclusionProof
         });
 
-        return abi.encode(canonical);
+        return abi.encode(CANONICAL_PROOF_SCHEMA_VERSION, abi.encode(canonical));
     }
 }

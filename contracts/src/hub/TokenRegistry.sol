@@ -2,10 +2,12 @@
 pragma solidity ^0.8.24;
 
 import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {Initializable} from "@openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import {DataTypes} from "../libraries/DataTypes.sol";
 import {ITokenRegistry} from "../interfaces/ITokenRegistry.sol";
 
-contract TokenRegistry is AccessControl, ITokenRegistry {
+contract TokenRegistry is AccessControl, Initializable, UUPSUpgradeable, ITokenRegistry {
     bytes32 public constant REGISTRY_ADMIN_ROLE = keccak256("REGISTRY_ADMIN_ROLE");
 
     enum TokenBehavior {
@@ -17,6 +19,9 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
 
     mapping(address => TokenConfig) private _byHubToken;
     mapping(address => address) private _hubBySpoke;
+    mapping(uint256 => mapping(address => address)) private _hubByChainSpoke;
+    mapping(address => mapping(uint256 => address)) private _spokeByHubChain;
+    mapping(address => mapping(uint256 => uint8)) private _spokeDecimalsByHubChain;
     address[] private _assets;
     mapping(address => bool) private _assetExists;
     mapping(address => TokenBehavior) public tokenBehaviorByToken;
@@ -34,18 +39,30 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
     );
 
     event TokenUpdated(address indexed hubToken);
+    event TokenRouteSet(uint256 indexed chainId, address indexed hubToken, address indexed spokeToken, uint8 spokeDecimals);
     event TokenBehaviorSet(address indexed token, TokenBehavior behavior);
 
     error InvalidTokenAddress();
+    error InvalidChainId(uint256 chainId);
     error InvalidRiskParams();
+    error InvalidTokenDecimals(uint8 decimals);
     error SpokeTokenAlreadyRegistered(address spokeToken, address hubToken);
+    error SpokeTokenAlreadyRegisteredOnChain(uint256 chainId, address spokeToken, address hubToken);
     error TokenBehaviorNotConfigured(address token);
     error UnsupportedTokenBehavior(address token, TokenBehavior behavior);
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(REGISTRY_ADMIN_ROLE, admin);
+        _disableInitializers();
     }
+
+    function initializeProxy(address admin) external initializer {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(REGISTRY_ADMIN_ROLE, admin);
+    }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function registerToken(TokenConfig calldata config) public onlyRole(REGISTRY_ADMIN_ROLE) {
         _registerToken(config);
@@ -86,10 +103,51 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
         _registerToken(config);
     }
 
+    function setTokenRoute(uint256 chainId, address hubToken, address spokeToken) external onlyRole(REGISTRY_ADMIN_ROLE) {
+        TokenConfig storage cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+        _setTokenRoute(chainId, hubToken, spokeToken, cfg.decimals);
+    }
+
+    function setTokenRoute(uint256 chainId, address hubToken, address spokeToken, uint8 spokeDecimals)
+        external
+        onlyRole(REGISTRY_ADMIN_ROLE)
+    {
+        _setTokenRoute(chainId, hubToken, spokeToken, spokeDecimals);
+    }
+
+    function _setTokenRoute(uint256 chainId, address hubToken, address spokeToken, uint8 spokeDecimals) internal {
+        if (chainId == 0) revert InvalidChainId(chainId);
+        if (hubToken == address(0) || spokeToken == address(0)) revert InvalidTokenAddress();
+        if (spokeDecimals == 0 || spokeDecimals > 77) revert InvalidTokenDecimals(spokeDecimals);
+
+        _requireSupportedTokenBehavior(hubToken);
+        _requireSupportedTokenBehavior(spokeToken);
+
+        TokenConfig storage cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+
+        address previousSpoke = _spokeByHubChain[hubToken][chainId];
+        if (previousSpoke != address(0) && previousSpoke != spokeToken) {
+            delete _hubByChainSpoke[chainId][previousSpoke];
+        }
+
+        address existingHub = _hubByChainSpoke[chainId][spokeToken];
+        if (existingHub != address(0) && existingHub != hubToken) {
+            revert SpokeTokenAlreadyRegisteredOnChain(chainId, spokeToken, existingHub);
+        }
+
+        _spokeByHubChain[hubToken][chainId] = spokeToken;
+        _hubByChainSpoke[chainId][spokeToken] = hubToken;
+        _spokeDecimalsByHubChain[hubToken][chainId] = spokeDecimals;
+        emit TokenRouteSet(chainId, hubToken, spokeToken, spokeDecimals);
+    }
+
     function _registerToken(TokenConfig memory config) internal {
         if (config.hubToken == address(0) || config.spokeToken == address(0)) {
             revert InvalidTokenAddress();
         }
+        if (config.decimals == 0 || config.decimals > 77) revert InvalidTokenDecimals(config.decimals);
         _requireSupportedTokenBehavior(config.hubToken);
         _requireSupportedTokenBehavior(config.spokeToken);
         _validateRisk(config.risk);
@@ -157,8 +215,25 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
         return _byHubToken[hubToken];
     }
 
-    function getHubTokenBySpoke(address spokeToken) external view returns (address) {
+    function getHubTokenBySpoke(uint256 sourceChainId, address spokeToken) external view returns (address) {
+        address byChain = _hubByChainSpoke[sourceChainId][spokeToken];
+        if (byChain != address(0)) return byChain;
         return _hubBySpoke[spokeToken];
+    }
+
+    function getSpokeTokenByHub(uint256 destinationChainId, address hubToken) external view returns (address) {
+        address byChain = _spokeByHubChain[hubToken][destinationChainId];
+        if (byChain != address(0)) return byChain;
+        return _byHubToken[hubToken].spokeToken;
+    }
+
+    function getSpokeDecimalsByHub(uint256 destinationChainId, address hubToken) external view returns (uint8) {
+        TokenConfig memory cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+
+        uint8 byChain = _spokeDecimalsByHubChain[hubToken][destinationChainId];
+        if (byChain != 0) return byChain;
+        return cfg.decimals;
     }
 
     function getSupportedAssets() external view returns (address[] memory) {
