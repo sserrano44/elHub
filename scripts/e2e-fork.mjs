@@ -33,7 +33,7 @@ const NETWORKS = {
   worldchain: { envPrefix: "WORLDCHAIN", label: "Worldchain", defaultChainId: 480 }
 };
 
-const HUB_NETWORK = normalizeNetwork(resolveEnvValue("HUB_NETWORK", "ethereum"));
+const HUB_NETWORK = normalizeNetwork(resolveEnvValue("HUB_NETWORK", "base"));
 const HUB_CONFIG = NETWORKS[HUB_NETWORK];
 const HUB_CHAIN_ID = Number(
   resolveEnvValue("HUB_CHAIN_ID", resolveEnvValue(`${HUB_CONFIG.envPrefix}_CHAIN_ID`, String(HUB_CONFIG.defaultChainId)))
@@ -323,7 +323,7 @@ async function main() {
 
   if (E2E_SUPPLY_ONLY) {
     console.log("[e2e] ==================================================");
-    console.log("[e2e] PASS: base->hub supply lifecycle settled");
+    console.log(`[e2e] PASS: ${SPOKE_LABEL.toLowerCase()}->hub supply lifecycle settled`);
     console.log("[e2e] checks: pending_fill observed, bridged observed, settlement credited on hub");
     console.log("[e2e] ==================================================");
     await stopAll();
@@ -1088,8 +1088,8 @@ function resolveNetworkRpc(network, fallback = "") {
 }
 
 function resolveSpokeConfig(defaultRpcUrl = "") {
-  const spokeNetworks = parseNetworkList(resolveEnvValue("SPOKE_NETWORKS", resolveEnvValue("SPOKE_NETWORK", "base")));
-  const network = spokeNetworks[0] ?? "base";
+  const spokeNetworks = parseNetworkList(resolveEnvValue("SPOKE_NETWORKS", resolveEnvValue("SPOKE_NETWORK", "worldchain")));
+  const network = spokeNetworks[0] ?? "worldchain";
   const config = NETWORKS[network];
   const chainKey = `${config.envPrefix}_CHAIN_ID`;
   const rpcKey = `${config.envPrefix}_RPC_URL`;
@@ -1104,7 +1104,7 @@ function resolveSpokeConfig(defaultRpcUrl = "") {
 
   const rpcUrl = resolveEnvValue(
     tenderlyRpcKey,
-    resolveEnvValue(rpcKey, resolveEnvValue(legacyRpcKey, network === "base" ? defaultRpcUrl : ""))
+    resolveEnvValue(rpcKey, resolveEnvValue(legacyRpcKey, defaultRpcUrl))
   );
   if (!rpcUrl) {
     throw new Error(`Missing ${tenderlyRpcKey} or ${rpcKey} for SPOKE_NETWORKS=${spokeNetworks.join(",")}`);

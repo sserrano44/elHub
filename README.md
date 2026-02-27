@@ -2,11 +2,11 @@ elhub
 
 Official site: `https://elhub.finance`
 
-Multi-chain intent-based DeFi money market with hub-side accounting on Ethereum mainnet and spoke execution on Base and BSC.
+Multi-chain intent-based DeFi money market with hub-side accounting on Base and spoke execution on Worldchain and BSC.
 
 ## What this repo includes
-- Hub contracts (Ethereum mainnet): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
-- Spoke contracts (Base/BSC): portal for supply/repay initiation + withdraw fills, and Across borrow receiver for borrow fills.
+- Hub contracts (Base): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
+- Spoke contracts (Worldchain/BSC): portal for supply/repay initiation + withdraw fills, and Across borrow receiver for borrow fills.
 - ZK plumbing: verifier interface + dev mode + circuit scaffold.
 - Services:
   - `services/indexer`: canonical lifecycle/status API.
@@ -50,8 +50,8 @@ pnpm dev
 ```
 
 `pnpm dev` runs:
-1. Ethereum-mainnet-local anvil (`:8545`, chain id `1`)
-2. Spoke-local anvil (`:9545`, chain id `8453` for `SPOKE_NETWORKS=base`, `56` for `SPOKE_NETWORKS=bsc`)
+1. Hub-local anvil (`:8545`, chain id from `HUB_NETWORK`)
+2. Spoke-local anvil (`:9545`, chain id from first network in `SPOKE_NETWORKS`)
 3. Hub + spoke deployments (`contracts/script/deploy-local.sh`)
 4. ABI generation (`packages/abis`)
 5. `indexer`, `prover`, `relayer`, and `web` apps
@@ -64,7 +64,7 @@ pnpm dev
 
 ## Contracts
 
-### Hub (Ethereum mainnet)
+### Hub (Base in production)
 - `HubMoneyMarket`: share-based supply/debt accounting, interest accrual, settlement hooks, liquidation skeleton.
 - `HubRiskManager`: HF math + lock/borrow/withdraw checks + caps.
 - `ChainlinkPriceOracle`: Chainlink `AggregatorV3` adapter with heartbeat/staleness checks, bounds, and decimal normalization to `e8`.
@@ -168,15 +168,15 @@ Notes:
   - full lifecycle: borrow -> repay -> withdraw collateral
   - liquidation when ETH price drops below safe collateralization
 
-### Fork E2E (Ethereum hub + selected spoke forks)
+### Fork E2E (Base hub + selected spoke forks)
 
 If you run a hub fork on `:8545` and spoke fork on `:8546`, execute:
 
 ```bash
-HUB_NETWORK=ethereum \
-SPOKE_NETWORKS=base \
-ETHEREUM_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
-BASE_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
+HUB_NETWORK=base \
+SPOKE_NETWORKS=worldchain \
+BASE_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
+WORLDCHAIN_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
 pnpm test:e2e:fork
 ```
 
@@ -200,22 +200,24 @@ Notes:
    2. `E2E_MIN_DEPLOYER_GAS_ETH` (default `2`)
    3. `E2E_MIN_OPERATOR_GAS_ETH` (default `0.05`)
 
-### Base -> Mainnet-Hub supply-only E2E
+### Spoke -> Base-hub supply-only E2E
 
-To run only the inbound supply path (Base spoke -> mainnet hub semantics, `HUB_CHAIN_ID=1`):
+To run only the inbound supply path for Base-hub semantics (default spoke: Worldchain):
 
 ```bash
-HUB_NETWORK=ethereum \
-SPOKE_NETWORKS=base \
-ETHEREUM_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
-BASE_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
-pnpm test:e2e:base-mainnet-supply
+HUB_NETWORK=base \
+SPOKE_NETWORKS=worldchain \
+BASE_TENDERLY_RPC_URL=http://127.0.0.1:8545 \
+WORLDCHAIN_TENDERLY_RPC_URL=http://127.0.0.1:8546 \
+pnpm test:e2e:base-hub-supply
 ```
 
 This wrapper runs `scripts/e2e-fork.mjs` with `E2E_SUPPLY_ONLY=1` and asserts:
 1. deposit reaches `pending_fill`
 2. deposit is proof-finalized to `bridged`
 3. settlement credits supply on hub
+
+Legacy alias: `pnpm test:e2e:base-mainnet-supply` still forwards to the Base-hub supply wrapper.
 
 For local/fork tests only, the script simulates the destination relay callback with `MockAcrossSpokePool.relayV3Deposit`; production relayer runtime no longer performs this relay simulation.
 
@@ -251,7 +253,7 @@ Notes:
 ### E2E command set
 
 Active E2E commands:
-1. `pnpm test:e2e:base-mainnet-supply` (smoke path for inbound supply lifecycle)
+1. `pnpm test:e2e:base-hub-supply` (smoke path for inbound supply lifecycle to Base hub)
 2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
 3. `pnpm test:e2e:live:base-world-bsc` (Base hub + Worldchain/BSC live scenario on real RPCs)
 4. `pnpm test:e2e` (runs both local/fork active E2E commands)
@@ -316,7 +318,9 @@ After local deploy:
   - configure dispatcher routes per hub asset (`setRoute`) and allow relayer caller (`setAllowedCaller`)
   - grant `PROOF_FILL_ROLE` on `HubSettlement` to `HubAcrossBorrowFinalizer`
 - Relayer inbound behavior:
-  - observe spoke `V3FundsDeposited` for source metadata (`initiated`)
+  - observe spoke Across deposit logs for source metadata (`initiated`):
+    - canonical live event: `FundsDeposited`
+    - local/fork mock event: `V3FundsDeposited`
   - observe hub `PendingDepositRecorded` for `pending_fill`
   - request proof from prover and call `finalizePendingDeposit`
   - do not call `relayV3Deposit` in production runtime

@@ -376,7 +376,9 @@ Public endpoints:
 3. `POST /intent/submit`
 
 Behavior:
-1. Watches spoke Across `V3FundsDeposited` logs.
+1. Watches spoke Across deposit logs:
+   1. canonical live event `FundsDeposited`
+   2. local/fork mock event `V3FundsDeposited`
 2. Updates indexer via signed internal calls.
 3. Waits for hub-side Across callback (`PendingDepositRecorded`), then runs permissionless proof finalization for inbound deposits.
 4. For borrow submit:
@@ -494,12 +496,12 @@ RPC resolution order:
 2. `.env` with the same keys
 3. localhost defaults (`8545/8546`) for local flows
 
-### 10.3 Base -> Mainnet-Hub supply-only E2E
+### 10.3 Spoke -> Base-hub supply-only E2E
 Script:
-1. `/Users/sebas/projects/hubris/scripts/e2e-base-mainnet-supply.mjs`
+1. `/Users/sebas/projects/hubris/scripts/e2e-base-hub-supply.mjs`
 
 Command:
-1. `pnpm test:e2e:base-mainnet-supply`
+1. `pnpm test:e2e:base-hub-supply`
 
 Checks:
 1. deposit reaches `pending_fill`
@@ -508,7 +510,7 @@ Checks:
 
 ### 10.4 Active E2E command set
 Commands:
-1. `pnpm test:e2e:base-mainnet-supply` (supply-only inbound lifecycle)
+1. `pnpm test:e2e:base-hub-supply` (supply-only inbound lifecycle)
 2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
 3. `pnpm test:e2e:live:base-world-bsc` (manual real-RPC live scenario: Base hub + Worldchain/BSC spokes)
 4. `pnpm test:e2e` (runs local/fork active E2E commands)

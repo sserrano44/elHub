@@ -8,16 +8,22 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 
 main().catch((error) => {
-  console.error("[e2e-base-mainnet-supply] failed:", error.message);
+  console.error("[e2e-base-hub-supply] failed:", error.message);
   process.exit(1);
 });
 
 async function main() {
-  console.warn(
-    "[e2e-base-mainnet-supply] deprecated alias; forwarding to scripts/e2e-base-hub-supply.mjs"
-  );
-  await run("node", ["./scripts/e2e-base-hub-supply.mjs"], {
-    cwd: rootDir
+  await run("node", ["./scripts/e2e-fork.mjs"], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      HUB_NETWORK: process.env.HUB_NETWORK ?? "base",
+      HUB_CHAIN_ID: process.env.HUB_CHAIN_ID ?? process.env.BASE_CHAIN_ID ?? "8453",
+      SPOKE_NETWORKS: process.env.SPOKE_NETWORKS ?? "worldchain",
+      BASE_TENDERLY_RPC_URL: process.env.BASE_TENDERLY_RPC_URL ?? "http://127.0.0.1:8545",
+      WORLDCHAIN_TENDERLY_RPC_URL: process.env.WORLDCHAIN_TENDERLY_RPC_URL ?? "http://127.0.0.1:8546",
+      E2E_SUPPLY_ONLY: "1"
+    }
   });
 }
 
