@@ -21,16 +21,19 @@ contract BorrowFillProofVerifierTest is TestBase {
     BorrowFillProofVerifier internal verifier;
 
     address internal sourceReceiver;
+    address internal destinationDispatcher;
     address internal destinationFinalizer;
 
     function setUp() external {
         sourceReceiver = vm.addr(0xAA11);
+        destinationDispatcher = vm.addr(0xABCD);
         destinationFinalizer = vm.addr(0xBB22);
 
         lightClientVerifier = new MockLightClientVerifier();
         eventVerifier = new MockAcrossBorrowFillEventVerifier();
         backend = new AcrossBorrowFillProofBackend(address(this), lightClientVerifier, eventVerifier);
         backend.setSourceReceiver(SOURCE_CHAIN_ID, sourceReceiver);
+        backend.setDestinationDispatcher(destinationDispatcher);
         verifier = new BorrowFillProofVerifier(backend);
     }
 
@@ -46,7 +49,15 @@ contract BorrowFillProofVerifierTest is TestBase {
         IBorrowFillProofVerifier.BorrowFillWitness memory borrowWitness =
             _witness(Constants.INTENT_BORROW, keccak256("borrow"));
         bytes memory borrowProof =
-            _canonicalProof(borrowWitness, sourceReceiver, destinationFinalizer, block.chainid, sourceBlockHash, receiptsRoot);
+            _canonicalProof(
+                borrowWitness,
+                sourceReceiver,
+                destinationDispatcher,
+                destinationFinalizer,
+                block.chainid,
+                sourceBlockHash,
+                receiptsRoot
+            );
 
         vm.prank(destinationFinalizer);
         bool ok = verifier.verifyBorrowFillProof(borrowProof, borrowWitness);
@@ -55,7 +66,15 @@ contract BorrowFillProofVerifierTest is TestBase {
         IBorrowFillProofVerifier.BorrowFillWitness memory withdrawWitness =
             _witness(Constants.INTENT_WITHDRAW, keccak256("withdraw"));
         bytes memory withdrawProof =
-            _canonicalProof(withdrawWitness, sourceReceiver, destinationFinalizer, block.chainid, sourceBlockHash, receiptsRoot);
+            _canonicalProof(
+                withdrawWitness,
+                sourceReceiver,
+                destinationDispatcher,
+                destinationFinalizer,
+                block.chainid,
+                sourceBlockHash,
+                receiptsRoot
+            );
 
         vm.prank(destinationFinalizer);
         ok = verifier.verifyBorrowFillProof(withdrawProof, withdrawWitness);
@@ -72,12 +91,39 @@ contract BorrowFillProofVerifierTest is TestBase {
             _witness(Constants.INTENT_SUPPLY, keccak256("unsupported"));
 
         bytes memory proof = _canonicalProof(
-            witness, sourceReceiver, destinationFinalizer, block.chainid, keccak256("block"), keccak256("receipts")
+            witness,
+            sourceReceiver,
+            destinationDispatcher,
+            destinationFinalizer,
+            block.chainid,
+            keccak256("block"),
+            keccak256("receipts")
         );
 
         vm.prank(destinationFinalizer);
         bool ok = verifier.verifyBorrowFillProof(proof, witness);
         assertTrue(!ok, "unsupported intent type should fail");
+    }
+
+    function test_verifyBorrowFillProofRejectsHubDispatcherMismatch() external {
+        bytes32 sourceBlockHash = keccak256("source-block-dispatcher");
+        bytes32 receiptsRoot = keccak256("receipts-root-dispatcher");
+        IBorrowFillProofVerifier.BorrowFillWitness memory witness =
+            _witness(Constants.INTENT_BORROW, keccak256("dispatcher-mismatch"));
+
+        bytes memory proof = _canonicalProof(
+            witness,
+            sourceReceiver,
+            vm.addr(0xDEAD),
+            destinationFinalizer,
+            block.chainid,
+            sourceBlockHash,
+            receiptsRoot
+        );
+
+        vm.prank(destinationFinalizer);
+        bool ok = verifier.verifyBorrowFillProof(proof, witness);
+        assertTrue(!ok, "hub dispatcher mismatch should fail verification");
     }
 
     function _witness(uint8 intentType, bytes32 intentTag)
@@ -104,6 +150,7 @@ contract BorrowFillProofVerifierTest is TestBase {
     function _canonicalProof(
         IBorrowFillProofVerifier.BorrowFillWitness memory witness,
         address sourceReceiver_,
+        address hubDispatcher,
         address hubFinalizer,
         uint256 destinationChainId,
         bytes32 sourceBlockHash,
@@ -136,6 +183,7 @@ contract BorrowFillProofVerifierTest is TestBase {
                 relayer: witness.relayer,
                 messageHash: witness.messageHash,
                 destinationChainId: destinationChainId,
+                hubDispatcher: hubDispatcher,
                 hubFinalizer: hubFinalizer
             })
         );

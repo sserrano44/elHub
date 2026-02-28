@@ -39,6 +39,7 @@ export type SourceBorrowFillProofInput = {
     sourceBlockHash: Hex;
     sourceReceiptsRoot: Hex;
     sourceReceiver: Address;
+    destinationDispatcher: Address;
     destinationFinalizer: Address;
     destinationChainId: bigint;
 };

@@ -931,6 +931,17 @@
     },
     {
         "type": "error",
+        "name": "InvalidExclusiveRelayer",
+        "inputs": [
+            {
+                "name": "exclusiveRelayer",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
         "name": "InvalidFillDeadlineBuffer",
         "inputs": []
     },
@@ -1106,6 +1117,22 @@
         "inputs": [
             {
                 "name": "account",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "QuoteExclusiveRelayerMismatch",
+        "inputs": [
+            {
+                "name": "expected",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "got",
                 "type": "address",
                 "internalType": "address"
             }

@@ -1263,8 +1263,22 @@ async function main() {
       network: spoke.network,
       chainId: spoke.chainId,
       contractName: "SpokeAcrossBorrowReceiver",
-      constructorArgs: [deployer.address, spokeAcrossPools[spoke.network]],
-      initArgs: [deployer.address, spokeAcrossPools[spoke.network]],
+      constructorArgs: [
+        deployer.address,
+        spokeAcrossPools[spoke.network],
+        hubAcrossBorrowDispatcher,
+        hubAcrossBorrowFinalizer,
+        BigInt(HUB_CHAIN_ID),
+        relayer.address
+      ],
+      initArgs: [
+        deployer.address,
+        spokeAcrossPools[spoke.network],
+        hubAcrossBorrowDispatcher,
+        hubAcrossBorrowFinalizer,
+        BigInt(HUB_CHAIN_ID),
+        relayer.address
+      ],
       client: spoke.walletClient,
       publicClient: spoke.publicClient,
       manifest,
@@ -1350,6 +1364,13 @@ async function main() {
       borrowReceiver: borrowReceiverDeployment.implementation
     };
   }
+
+  await write(hubWallet, hubPublic, {
+    address: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "setDestinationDispatcher",
+    args: [hubAcrossBorrowDispatcher]
+  });
 
   console.log("Configuring hub registry/risk/markets + routes...");
   for (const token of TOKEN_DEFS) {
@@ -1505,6 +1526,9 @@ async function main() {
           hubAcrossSpokePool,
           spokeTokenMap[spoke.network][token.symbol],
           spokeDeployments[spoke.network].borrowReceiver,
+          relayer.address,
+          300_000,
+          0,
           true
         ]
       });

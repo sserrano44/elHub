@@ -395,8 +395,12 @@ async function main() {
   const spokeAcrossSpokePool = await deploy(spokeWallet, spokePublic, "MockAcrossSpokePool", []);
   const spokeBorrowReceiverDeployment = await deployUUPS(spokeWallet, spokePublic, "SpokeAcrossBorrowReceiver", [
     deployer.address,
-    spokeAcrossSpokePool
-  ], [deployer.address, spokeAcrossSpokePool]);
+    spokeAcrossSpokePool,
+    hubAcrossBorrowDispatcher,
+    hubAcrossBorrowFinalizer,
+    BigInt(HUB_CHAIN_ID),
+    relayer.address
+  ], [deployer.address, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, BigInt(HUB_CHAIN_ID), relayer.address]);
   const spokeBorrowReceiver = spokeBorrowReceiverDeployment.proxy;
   const spokeBridgeAdapterDeployment = await deployUUPS(
     spokeWallet,
@@ -540,6 +544,12 @@ async function main() {
     args: [BigInt(SPOKE_CHAIN_ID), spokeBorrowReceiver]
   });
   await write(hubWallet, hubPublic, {
+    address: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "setDestinationDispatcher",
+    args: [hubAcrossBorrowDispatcher]
+  });
+  await write(hubWallet, hubPublic, {
     address: hubAcrossBorrowDispatcher,
     abi: hubAcrossBorrowDispatcherAbi,
     functionName: "setAllowedCaller",
@@ -550,7 +560,7 @@ async function main() {
       address: hubAcrossBorrowDispatcher,
       abi: hubAcrossBorrowDispatcherAbi,
       functionName: "setRoute",
-      args: [row.hub, hubAcrossSpokePool, row.spoke, spokeBorrowReceiver, ZERO_ADDRESS, 300_000, true]
+      args: [row.hub, hubAcrossSpokePool, row.spoke, spokeBorrowReceiver, relayer.address, 300_000, true]
     });
   }
 

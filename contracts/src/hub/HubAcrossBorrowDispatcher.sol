@@ -63,7 +63,9 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         uint256 amount;
         uint256 fee;
         address relayer;
+        uint256 sourceChainId;
         uint256 destinationChainId;
+        address hubDispatcher;
         address hubFinalizer;
     }
 
@@ -120,6 +122,8 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
     error InvalidQuoteOutputAmount(uint256 outputAmount, uint256 inputAmount);
     error InvalidQuoteDeadlines(uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline);
     error InvalidQuoteTimestamp();
+    error InvalidExclusiveRelayer(address exclusiveRelayer);
+    error QuoteExclusiveRelayerMismatch(address expected, address got);
 
     constructor(address owner_, address hubFinalizer_) Ownable(owner_) {
         defaultFillDeadlineBuffer = DEFAULT_FILL_DEADLINE_BUFFER;
@@ -239,6 +243,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         if (spokePool == address(0)) revert InvalidSpokePool(spokePool);
         if (spokeToken == address(0)) revert InvalidSpokeToken(spokeToken);
         if (spokeReceiver == address(0)) revert InvalidSpokeReceiver(spokeReceiver);
+        if (enabled && exclusiveRelayer == address(0)) revert InvalidExclusiveRelayer(exclusiveRelayer);
 
         routes[routeKey(hubAsset, destinationChainId)] = Route({
             spokePool: spokePool,
@@ -356,6 +361,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         if (!route.enabled || route.spokePool == address(0) || route.spokeToken == address(0) || route.spokeReceiver == address(0)) {
             revert RouteNotEnabled(hubAsset);
         }
+        if (route.exclusiveRelayer == address(0)) revert InvalidExclusiveRelayer(route.exclusiveRelayer);
         if (outputToken != route.spokeToken) {
             revert InvalidOutputToken(route.spokeToken, outputToken);
         }
@@ -378,6 +384,9 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         if (quote.exclusivityDeadline > quote.fillDeadline) {
             revert InvalidQuoteDeadlines(quote.quoteTimestamp, quote.fillDeadline, quote.exclusivityDeadline);
         }
+        if (quote.exclusiveRelayer != address(0) && quote.exclusiveRelayer != route.exclusiveRelayer) {
+            revert QuoteExclusiveRelayerMismatch(route.exclusiveRelayer, quote.exclusiveRelayer);
+        }
 
         bytes memory acrossMessage = _encodeBorrowDispatchMessage(
             intentId,
@@ -388,15 +397,15 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             hubAsset,
             quote.outputAmount,
             relayerFee,
+            block.chainid,
             outputChainId,
-            msg.sender
+            msg.sender,
+            address(this)
         );
 
         IERC20(hubAsset).safeTransferFrom(msg.sender, address(this), amount);
         IERC20(hubAsset).safeApprove(route.spokePool, 0);
         IERC20(hubAsset).safeApprove(route.spokePool, amount);
-
-        address exclusiveRelayer = quote.exclusiveRelayer == address(0) ? route.exclusiveRelayer : quote.exclusiveRelayer;
 
         IAcrossSpokePoolBorrowDispatcher(route.spokePool).depositV3(
             msg.sender,
@@ -406,10 +415,10 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             amount,
             quote.outputAmount,
             outputChainId,
-            exclusiveRelayer,
+            route.exclusiveRelayer,
             quote.quoteTimestamp,
             quote.fillDeadline,
-            quote.exclusivityDeadline,
+            quote.fillDeadline,
             acrossMessage
         );
 
@@ -464,8 +473,10 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address hubAsset,
         uint256 amount,
         uint256 relayerFee,
+        uint256 sourceChainId,
         uint256 outputChainId,
-        address relayer
+        address relayer,
+        address hubDispatcher
     ) internal view returns (bytes memory) {
         return abi.encode(
             intentId,
@@ -477,7 +488,9 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             amount,
             relayerFee,
             relayer,
+            sourceChainId,
             outputChainId,
+            hubDispatcher,
             hubFinalizer
         );
     }

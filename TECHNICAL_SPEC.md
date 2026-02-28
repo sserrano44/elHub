@@ -259,9 +259,9 @@ Files:
 
 Responsibilities:
 1. `HubAcrossBorrowDispatcher` sends hub-funded borrow fills over Across to spoke receiver with deterministic message binding.
-2. `SpokeAcrossBorrowReceiver` only accepts callbacks from allowlisted spoke pool, transfers proceeds/fees, and emits `BorrowFillRecorded`.
+2. `SpokeAcrossBorrowReceiver` only accepts callbacks from allowlisted spoke pool and expected fill relayer, and requires message bindings for expected hub chain, hub dispatcher, and hub finalizer before transfers.
 3. `HubAcrossBorrowFinalizer` permissionlessly verifies borrow-fill proof and records settlement fill evidence exactly once.
-4. Borrow proof backend enforces source receiver allowlist and source finality + source event inclusion checks.
+4. Borrow proof backend enforces source receiver allowlist, destination dispatcher/finalizer binding, and source finality + source event inclusion checks.
 5. `HubSettlement` accepts proof-verified borrow fill evidence via `PROOF_FILL_ROLE`.
 
 ## 6. Intent and Lifecycle State Machines
@@ -285,7 +285,8 @@ Responsibilities:
 2. Relayer calls `HubLockManager.lock`.
 3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
 4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`:
-   1. receiver pays recipient and relayer fee.
+   1. receiver authenticates source chain, hub dispatcher, hub finalizer, and callback relayer.
+   2. receiver pays recipient and relayer fee.
    2. receiver emits `BorrowFillRecorded`.
 5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer verifies proof and records fill evidence into settlement.
@@ -296,7 +297,7 @@ Responsibilities:
 1. User signs EIP-712 intent.
 2. Relayer calls `HubLockManager.lock`.
 3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` with the same dispatcher/finalizer/relayer authentication checks.
 5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer verifies proof and records fill evidence in settlement.
 7. Prover batches finalize action.
@@ -384,13 +385,13 @@ Behavior:
 4. For borrow submit:
    1. lock on hub
    2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher`
-   3. observe spoke `BorrowFillRecorded`
+   3. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
    4. finalize proof on hub via `HubAcrossBorrowFinalizer`
    5. enqueue prover action
 5. For withdraw submit:
    1. lock on hub
    2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher` (`intentType=WITHDRAW`)
-   3. observe spoke `BorrowFillRecorded`
+   3. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
    4. finalize proof on hub via `HubAcrossBorrowFinalizer`
    5. enqueue prover action
 
@@ -541,11 +542,12 @@ Operational constraints:
 Enforced in current implementation:
 1. Hub-side lock required before borrow/withdraw finalization.
 2. Lock relayer binding and expiry checks.
-3. Double-fill prevention on spoke.
-4. Batch/intent/deposit replay protections in settlement.
-5. Settlement applies only after verifier success.
-6. Reentrancy guards on critical state transition functions.
-7. Pause controls on lock manager, settlement, market, and spoke portal.
+3. Spoke borrow receiver enforces expected source chain + hub dispatcher + hub finalizer + callback relayer before side effects.
+4. Double-fill prevention on spoke.
+5. Batch/intent/deposit replay protections in settlement.
+6. Settlement applies only after verifier success.
+7. Reentrancy guards on critical state transition functions.
+8. Pause controls on lock manager, settlement, market, and spoke portal.
 
 Known security gaps (tracked by readiness plan):
 1. Deposit proof backend trust/quality (production must use real light-client/ZK verification constraints for source event validity).

@@ -109,7 +109,7 @@ const AcrossFundsDepositedEvent = parseAbiItem(
   "event FundsDeposited(bytes32 inputToken, bytes32 outputToken, uint256 inputAmount, uint256 outputAmount, uint256 indexed destinationChainId, uint256 indexed depositId, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes32 indexed depositor, bytes32 recipient, bytes32 exclusiveRelayer, bytes message)"
 );
 const SpokeBorrowFillRecordedEvent = parseAbiItem(
-  "event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 destinationChainId,address hubFinalizer,bytes32 messageHash)"
+  "event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 sourceChainId,uint256 destinationChainId,address hubDispatcher,address hubFinalizer,bytes32 messageHash)"
 );
 const HubBorrowLockedEvent = parseAbiItem(
   "event BorrowLocked(bytes32 indexed intentId,address indexed user,address indexed asset,uint256 amount,address relayer)"

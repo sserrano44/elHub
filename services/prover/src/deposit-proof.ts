@@ -45,6 +45,7 @@ export type SourceBorrowFillProofInput = {
   sourceBlockHash: Hex;
   sourceReceiptsRoot: Hex;
   sourceReceiver: Address;
+  destinationDispatcher: Address;
   destinationFinalizer: Address;
   destinationChainId: bigint;
 };
@@ -170,6 +171,7 @@ export function buildCanonicalBorrowFillProof(
           { name: "relayer", type: "address" },
           { name: "messageHash", type: "bytes32" },
           { name: "destinationChainId", type: "uint256" },
+          { name: "hubDispatcher", type: "address" },
           { name: "hubFinalizer", type: "address" }
         ]
       }
@@ -193,6 +195,7 @@ export function buildCanonicalBorrowFillProof(
         relayer: witness.relayer,
         messageHash: witness.messageHash,
         destinationChainId: source.destinationChainId,
+        hubDispatcher: source.destinationDispatcher,
         hubFinalizer: source.destinationFinalizer
       }
     ]

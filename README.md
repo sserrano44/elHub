@@ -85,7 +85,7 @@ pnpm dev
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
 - `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and local callback simulation in E2E harnesses.
-- `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that transfers borrow proceeds and emits proof-bound source event.
+- `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that authenticates hub origin + filler relayer before transfers and emits proof-bound source event.
 
 ## End-to-end lifecycle
 
@@ -102,7 +102,7 @@ pnpm dev
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
 3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only if spoke pool sender, callback relayer, hub dispatcher/finalizer, and source/destination chain bindings match expected values.
 5. Relayer/prover submit borrow fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer records proof-verified borrow fill evidence in settlement.
 7. Prover batches finalize actions and settles.
@@ -112,7 +112,7 @@ pnpm dev
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
 3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only after origin/auth checks pass.
 5. Relayer/prover submit withdraw fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer records proof-verified withdraw fill evidence in settlement.
 7. Prover batches finalize actions and settles.
@@ -314,8 +314,9 @@ After local deploy:
   - do not grant attester/operator EOAs any custody bridge registration role
 - Configure Across borrow fulfillment path:
   - deploy `HubAcrossBorrowDispatcher(admin, hubAcrossBorrowFinalizer)`
-  - deploy `SpokeAcrossBorrowReceiver(admin, spokeAcrossSpokePool)`
-  - configure dispatcher routes per hub asset (`setRoute`) and allow relayer caller (`setAllowedCaller`)
+  - deploy `SpokeAcrossBorrowReceiver(admin, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, hubChainId, fillRelayer)`
+  - configure dispatcher routes per hub asset (`setRoute`) with nonzero `exclusiveRelayer` and allow relayer caller (`setAllowedCaller`)
+  - set `AcrossBorrowFillProofBackend.setDestinationDispatcher(hubAcrossBorrowDispatcher)`
   - grant `PROOF_FILL_ROLE` on `HubSettlement` to `HubAcrossBorrowFinalizer`
 - Relayer inbound behavior:
   - observe spoke Across deposit logs for source metadata (`initiated`):
@@ -326,7 +327,7 @@ After local deploy:
   - do not call `relayV3Deposit` in production runtime
 - Relayer borrow behavior:
   - lock intent on hub and dispatch borrow/withdraw via `HubAcrossBorrowDispatcher`
-  - observe spoke `BorrowFillRecorded`
+  - observe spoke `BorrowFillRecorded` and reject mismatched `hubDispatcher` / `hubFinalizer`
   - request proof from prover and call `HubAcrossBorrowFinalizer.finalizeBorrowFill`
   - do not use any direct spoke fill function in production runtime
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
@@ -342,7 +343,9 @@ After local deploy:
 - Borrow/withdraw requires hub-side lock and reservation before spoke fill.
 - Settlement batch replay is blocked by `batchId` replay protection.
 - Intent finalization replay blocked via lock consumption + settled intent tracking.
+- Spoke outbound fills require authenticated hub origin (`sourceChainId`, `hubDispatcher`, `hubFinalizer`) and authenticated callback relayer before token transfer or `intentFilled` write.
 - Spoke double-fills blocked by `SpokeAcrossBorrowReceiver.intentFilled`.
+- Borrow/withdraw liveness depends on protocol-operated exclusive relayer availability.
 - `DEV_MODE` verifier does not provide production cryptographic guarantees.
 - Local Across flow still uses mocked SpokePools; production must use real Across contracts and a production-grade light-client/ZK deposit proof backend.
 

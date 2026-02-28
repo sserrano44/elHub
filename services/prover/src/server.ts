@@ -234,6 +234,7 @@ const borrowFillWitnessSchema = z.object({
   sourceBlockHash: z.string().startsWith("0x"),
   sourceReceiptsRoot: z.string().startsWith("0x"),
   sourceReceiver: z.string().startsWith("0x"),
+  destinationDispatcher: z.string().startsWith("0x"),
   destinationFinalizer: z.string().startsWith("0x"),
   destinationChainId: z.string()
 });
@@ -574,6 +575,7 @@ function normalizeSourceBorrowFillProof(input: z.infer<typeof borrowFillWitnessS
     sourceBlockHash: input.sourceBlockHash as Hex,
     sourceReceiptsRoot: input.sourceReceiptsRoot as Hex,
     sourceReceiver: input.sourceReceiver as Address,
+    destinationDispatcher: input.destinationDispatcher as Address,
     destinationFinalizer: input.destinationFinalizer as Address,
     destinationChainId: BigInt(input.destinationChainId)
   };

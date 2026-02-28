@@ -224,6 +224,8 @@ async function main() {
   const spokePublic = createPublicClient({ chain: spokeChain, transport: http(SPOKE_RPC_URL) });
   const hubWallet = createWalletClient({ account: userAccount, chain: hubChain, transport: http(HUB_RPC_URL) });
   const spokeWallet = createWalletClient({ account: userAccount, chain: spokeChain, transport: http(SPOKE_RPC_URL) });
+  const relayerAccount = privateKeyToAccount(relayerPrivateKey);
+  const relayerSpokeWallet = createWalletClient({ account: relayerAccount, chain: spokeChain, transport: http(SPOKE_RPC_URL) });
 
   const MockERC20Abi = readJson(path.join(rootDir, "packages", "abis", "src", "generated", "MockERC20.json"));
   const SpokePortalAbi = readJson(path.join(rootDir, "packages", "abis", "src", "generated", "SpokePortal.json"));
@@ -397,7 +399,7 @@ async function main() {
   await simulateAcrossRelay({
     sourcePublic: hubPublic,
     destinationPublic: spokePublic,
-    destinationWallet: spokeWallet,
+    destinationWallet: relayerSpokeWallet,
     sourceAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
     destinationAcrossSpokePool: deployments.spoke.acrossSpokePool,
     sourceChainId: BigInt(HUB_CHAIN_ID),
@@ -507,7 +509,7 @@ async function main() {
   await simulateAcrossRelay({
     sourcePublic: hubPublic,
     destinationPublic: spokePublic,
-    destinationWallet: spokeWallet,
+    destinationWallet: relayerSpokeWallet,
     sourceAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
     destinationAcrossSpokePool: deployments.spoke.acrossSpokePool,
     sourceChainId: BigInt(HUB_CHAIN_ID),

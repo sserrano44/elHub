@@ -27,6 +27,7 @@ contract ExternalAcrossBorrowFillEventVerifier is Ownable, IAcrossBorrowFillEven
         bytes32 receiptsRoot,
         address sourceReceiver,
         uint256 expectedDestinationChainId,
+        address expectedHubDispatcher,
         address expectedHubFinalizer,
         bytes calldata proof
     ) external view returns (bool) {
@@ -36,6 +37,7 @@ contract ExternalAcrossBorrowFillEventVerifier is Ownable, IAcrossBorrowFillEven
             receiptsRoot,
             sourceReceiver,
             expectedDestinationChainId,
+            expectedHubDispatcher,
             expectedHubFinalizer,
             proof
         );
@@ -47,4 +49,3 @@ contract ExternalAcrossBorrowFillEventVerifier is Ownable, IAcrossBorrowFillEven
         emit VerifierSet(address(verifier_));
     }
 }
-

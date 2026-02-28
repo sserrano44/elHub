@@ -202,7 +202,7 @@ const tokenRegistryReadAbi = parseAbi([
   "function getSpokeDecimalsByHub(uint256 destinationChainId,address hubToken) view returns (uint8)"
 ]);
 const spokeBorrowFillRecordedEvent = parseAbiItem(
-  "event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 destinationChainId,address hubFinalizer,bytes32 messageHash)"
+  "event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 sourceChainId,uint256 destinationChainId,address hubDispatcher,address hubFinalizer,bytes32 messageHash)"
 );
 const hubPendingDepositRecordedEvent = parseAbiItem(
   "event PendingDepositRecorded(bytes32 indexed pendingId,uint256 indexed sourceChainId,uint256 indexed depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,address tokenReceived,uint256 amountReceived,address relayer,bytes32 messageHash)"
@@ -696,6 +696,7 @@ async function handleSpokeBorrowFillLog(log: {
   const fee = asBigInt(log.args.fee);
   const relayer = log.args.relayer as Address | undefined;
   const destinationChainId = asBigInt(log.args.destinationChainId);
+  const hubDispatcher = log.args.hubDispatcher as Address | undefined;
   const hubFinalizer = log.args.hubFinalizer as Address | undefined;
   const messageHash = log.args.messageHash as Hex | undefined;
   const sourceTxHash = log.transactionHash;
@@ -713,6 +714,7 @@ async function handleSpokeBorrowFillLog(log: {
     || fee === undefined
     || !relayer
     || destinationChainId === undefined
+    || !hubDispatcher
     || !hubFinalizer
     || !messageHash
     || !sourceTxHash
@@ -730,6 +732,10 @@ async function handleSpokeBorrowFillLog(log: {
   }
   if (destinationChainId !== spokeChainId) {
     console.warn(`Skipping outbound fill ${intentId} due to chain mismatch`);
+    return;
+  }
+  if (hubDispatcher.toLowerCase() !== acrossBorrowDispatcherAddress.toLowerCase()) {
+    console.warn(`Skipping outbound fill ${intentId} due to hub dispatcher mismatch`);
     return;
   }
   if (hubFinalizer.toLowerCase() !== acrossBorrowFinalizerAddress.toLowerCase()) {
@@ -1373,6 +1379,7 @@ async function fetchBorrowFillProof(witness: BorrowFillWitness, sourceEvidence: 
     sourceBlockHash: sourceEvidence.sourceBlockHash,
     sourceReceiptsRoot: sourceEvidence.sourceReceiptsRoot,
     sourceReceiver: sourceEvidence.sourceReceiver,
+    destinationDispatcher: acrossBorrowDispatcherAddress,
     destinationFinalizer: acrossBorrowFinalizerAddress,
     destinationChainId: hubChainId.toString()
   }) as { proof?: string } | undefined;

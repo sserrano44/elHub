@@ -17,11 +17,14 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
     IAcrossBorrowFillEventVerifier public immutable eventVerifier;
 
     mapping(uint256 => address) public sourceReceiverByChain;
+    address public destinationDispatcher;
 
     event SourceReceiverSet(uint256 indexed sourceChainId, address indexed receiver);
+    event DestinationDispatcherSet(address indexed destinationDispatcher);
 
     error InvalidVerifier(address verifier);
     error InvalidSourceReceiver(uint256 sourceChainId, address receiver);
+    error InvalidDestinationDispatcher(address destinationDispatcher);
 
     constructor(
         address owner_,
@@ -50,6 +53,12 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
         emit SourceReceiverSet(sourceChainId, receiver);
     }
 
+    function setDestinationDispatcher(address destinationDispatcher_) external onlyOwner {
+        if (destinationDispatcher_ == address(0)) revert InvalidDestinationDispatcher(destinationDispatcher_);
+        destinationDispatcher = destinationDispatcher_;
+        emit DestinationDispatcherSet(destinationDispatcher_);
+    }
+
     function verifyCanonicalBorrowFill(
         IBorrowFillProofVerifier.BorrowFillWitness calldata witness,
         CanonicalSourceProof calldata proof,
@@ -57,6 +66,7 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
         uint256 destinationChainId
     ) external view override returns (bool) {
         if (!_isSupportedIntentType(witness.intentType)) return false;
+        if (destinationDispatcher == address(0)) return false;
 
         address expectedReceiver = sourceReceiverByChain[witness.sourceChainId];
         if (expectedReceiver == address(0)) return false;
@@ -76,6 +86,7 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
             proof.receiptsRoot,
             proof.sourceReceiver,
             destinationChainId,
+            destinationDispatcher,
             destinationFinalizer,
             proof.inclusionProof
         );

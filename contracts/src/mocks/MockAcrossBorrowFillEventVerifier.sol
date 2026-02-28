@@ -25,6 +25,7 @@ contract MockAcrossBorrowFillEventVerifier is IAcrossBorrowFillEventVerifier {
         address relayer;
         bytes32 messageHash;
         uint256 destinationChainId;
+        address hubDispatcher;
         address hubFinalizer;
     }
 
@@ -34,6 +35,7 @@ contract MockAcrossBorrowFillEventVerifier is IAcrossBorrowFillEventVerifier {
         bytes32 receiptsRoot,
         address sourceReceiver,
         uint256 expectedDestinationChainId,
+        address expectedHubDispatcher,
         address expectedHubFinalizer,
         bytes calldata proof
     ) external view override returns (bool) {
@@ -52,6 +54,7 @@ contract MockAcrossBorrowFillEventVerifier is IAcrossBorrowFillEventVerifier {
             && payload.spokeToken == witness.spokeToken && payload.hubAsset == witness.hubAsset
             && payload.amount == witness.amount && payload.fee == witness.fee && payload.relayer == witness.relayer
             && payload.messageHash == witness.messageHash && payload.destinationChainId == expectedDestinationChainId
+            && payload.hubDispatcher == expectedHubDispatcher
             && payload.hubFinalizer == expectedHubFinalizer;
     }
 

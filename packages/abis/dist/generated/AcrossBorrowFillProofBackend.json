@@ -35,6 +35,19 @@
     },
     {
         "type": "function",
+        "name": "destinationDispatcher",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "eventVerifier",
         "inputs": [],
         "outputs": [
@@ -102,6 +115,19 @@
         "type": "function",
         "name": "renounceOwnership",
         "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setDestinationDispatcher",
+        "inputs": [
+            {
+                "name": "destinationDispatcher_",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
         "outputs": [],
         "stateMutability": "nonpayable"
     },
@@ -308,6 +334,19 @@
     },
     {
         "type": "event",
+        "name": "DestinationDispatcherSet",
+        "inputs": [
+            {
+                "name": "destinationDispatcher",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "Initialized",
         "inputs": [
             {
@@ -401,6 +440,17 @@
         "type": "error",
         "name": "FailedInnerCall",
         "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InvalidDestinationDispatcher",
+        "inputs": [
+            {
+                "name": "destinationDispatcher",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
     },
     {
         "type": "error",
