@@ -1,8 +1,6 @@
-elhub
+elHub
 
-Official site: `https://elhub.finance`
-
-Multi-chain intent-based DeFi money market with hub-side accounting on Base and spoke execution on Worldchain and BSC.
+Multi-chain intent-based DeFi money market with hub-side accounting on Base and spoke execution on other L2s likes BSC, Worldchain and Polygon.
 
 ## What this repo includes
 - Hub contracts (Base): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
