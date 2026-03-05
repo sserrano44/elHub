@@ -83,7 +83,7 @@ pnpm dev
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
 - `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and local callback simulation in E2E harnesses.
-- `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that authenticates hub origin + filler relayer before transfers and emits proof-bound source event.
+- `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that authenticates hub origin before transfers and emits proof-bound source event.
 
 ## End-to-end lifecycle
 
@@ -101,11 +101,12 @@ pnpm dev
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
 3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only if spoke pool sender, callback relayer, hub dispatcher/finalizer, and source/destination chain bindings match expected values.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only if spoke pool sender plus hub dispatcher/finalizer and source/destination chain bindings match expected values.
 5. Relayer/prover submit borrow fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer records proof-verified borrow fill evidence in settlement.
 7. Prover batches finalize actions and settles.
 8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
+9. If fill does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
 
 ### Withdraw
 1. User signs EIP-712 intent in UI.
@@ -116,6 +117,7 @@ pnpm dev
 6. Finalizer records proof-verified withdraw fill evidence in settlement.
 7. Prover batches finalize actions and settles.
 8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
+9. If fill does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
 
 ## Testing
 
@@ -312,7 +314,7 @@ After local deploy:
   - Keep heartbeat and bounds conservative per asset and chain.
 - Configure `AcrossBridgeAdapter` (recommended inbound transport path):
   - `setAllowedCaller(<SpokePortal>, true)`
-  - `setRoute(localToken, acrossSpokePool, hubToken, exclusiveRelayer, fillDeadlineBuffer, true)` per token
+  - `setRoute(localToken, acrossSpokePool, hubToken, address(0), fillDeadlineBuffer, true)` per token
   - `SpokePortal.setBridgeAdapter(<AcrossBridgeAdapter>)`
 - Configure hub-side Across receiver:
   - deploy `HubAcrossReceiver(admin, custody, depositProofVerifier, hubSpokePool, recoveryVault, pendingFinalizeTtl, recoverySweepDelay)`
@@ -321,8 +323,8 @@ After local deploy:
   - do not grant attester/operator EOAs any custody bridge registration role
 - Configure Across borrow fulfillment path:
   - deploy `HubAcrossBorrowDispatcher(admin, hubAcrossBorrowFinalizer)`
-  - deploy `SpokeAcrossBorrowReceiver(admin, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, hubChainId, fillRelayer)`
-  - configure dispatcher routes per hub asset (`setRoute`) with nonzero `exclusiveRelayer` and allow relayer caller (`setAllowedCaller`)
+  - deploy `SpokeAcrossBorrowReceiver(admin, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, hubChainId)`
+  - configure dispatcher routes per hub asset (`setRoute`) with public fills (no exclusivity) and allow relayer caller (`setAllowedCaller`)
   - set `AcrossBorrowFillProofBackend.setDestinationDispatcher(hubAcrossBorrowDispatcher)`
   - grant `PROOF_FILL_ROLE` on `HubSettlement` to `HubAcrossBorrowFinalizer`
 - Relayer inbound behavior:
@@ -350,9 +352,9 @@ After local deploy:
 - Borrow/withdraw requires hub-side lock and reservation before spoke fill.
 - Settlement batch replay is blocked by `batchId` replay protection.
 - Intent finalization replay blocked via lock consumption + settled intent tracking.
-- Spoke outbound fills require authenticated hub origin (`sourceChainId`, `hubDispatcher`, `hubFinalizer`) and authenticated callback relayer before token transfer or `intentFilled` write.
+- Spoke outbound fills require authenticated hub origin (`sourceChainId`, `hubDispatcher`, `hubFinalizer`) before token transfer or `intentFilled` write.
 - Spoke double-fills blocked by `SpokeAcrossBorrowReceiver.intentFilled`.
-- Borrow/withdraw liveness depends on protocol-operated exclusive relayer availability.
+- Borrow/withdraw routes are configured for public fills; stale locks are automatically unwound after expiry.
 - `DEV_MODE` verifier does not provide production cryptographic guarantees.
 - Local Across flow still uses mocked SpokePools; production must use real Across contracts and a production-grade light-client/ZK deposit proof backend.
 

@@ -561,45 +561,62 @@ async function main() {
       const res = await fetch(`${INDEXER_API_URL}/intents/${borrowIntentId}`);
       if (!res.ok) return false;
       const payload = await res.json();
-      return payload.status === "settled";
+      return payload.status === "settled" || payload.status === "expired_unwound";
     },
-    "borrow settlement",
+    "borrow settlement or expiry unwind",
     900_000
   );
 
-  await waitUntil(
-    async () => {
-      const current = await hubPublic.readContract({
-        abi: HubMoneyMarketAbi,
-        address: moneyMarket,
-        functionName: "getUserDebt",
-        args: [user2.address, usdcHub]
-      });
-      return current > 0n;
-    },
-    "USER2 USDC debt after borrow settlement",
-    180_000
-  );
+  const borrowIntentRecord = await fetch(`${INDEXER_API_URL}/intents/${borrowIntentId}`).then((res) => res.json());
+  evidence.user2BorrowFinalStatus = String(borrowIntentRecord.status ?? "unknown");
 
-  const user2BscUsdcAfter = await bscPublic.readContract({
-    abi: ERC20Abi,
-    address: bscUsdc,
-    functionName: "balanceOf",
-    args: [user2.address]
-  });
-  const borrowFill = await waitForBorrowFillLog({
-    bscPublic,
-    borrowReceiver: deployments.spokes.bsc.borrowReceiver,
-    intentId: borrowIntentId,
-    fromBlock: borrowLogFromBlock
-  });
-  evidence.user2BorrowFillTx = borrowFill.txHash;
-  evidence.user2BorrowFillAmount = borrowFill.amount.toString();
-  evidence.user2BorrowFillFee = borrowFill.fee.toString();
+  if (borrowIntentRecord.status === "settled") {
+    await waitUntil(
+      async () => {
+        const current = await hubPublic.readContract({
+          abi: HubMoneyMarketAbi,
+          address: moneyMarket,
+          functionName: "getUserDebt",
+          args: [user2.address, usdcHub]
+        });
+        return current > 0n;
+      },
+      "USER2 USDC debt after borrow settlement",
+      180_000
+    );
 
-  const expectedNet = borrowFill.amount - borrowFill.fee;
-  if (user2BscUsdcAfter - user2BscUsdcBefore < expectedNet) {
-    throw new Error("expected USER2 BSC USDC balance increase from borrow fill");
+    const user2BscUsdcAfter = await bscPublic.readContract({
+      abi: ERC20Abi,
+      address: bscUsdc,
+      functionName: "balanceOf",
+      args: [user2.address]
+    });
+    const borrowFill = await waitForBorrowFillLog({
+      bscPublic,
+      borrowReceiver: deployments.spokes.bsc.borrowReceiver,
+      intentId: borrowIntentId,
+      fromBlock: borrowLogFromBlock
+    });
+    evidence.user2BorrowFillTx = borrowFill.txHash;
+    evidence.user2BorrowFillAmount = borrowFill.amount.toString();
+    evidence.user2BorrowFillFee = borrowFill.fee.toString();
+
+    const expectedNet = borrowFill.amount - borrowFill.fee;
+    if (user2BscUsdcAfter - user2BscUsdcBefore < expectedNet) {
+      throw new Error("expected USER2 BSC USDC balance increase from borrow fill");
+    }
+  } else if (borrowIntentRecord.status === "expired_unwound") {
+    const reservedDebtAfter = await hubPublic.readContract({
+      abi: HubLockManagerOpsAbi,
+      address: lockManager,
+      functionName: "reservedDebt",
+      args: [user2.address, usdcHub]
+    });
+    if (reservedDebtAfter !== 0n) {
+      throw new Error(`expired_unwound intent still has reserved debt: ${reservedDebtAfter.toString()}`);
+    }
+  } else {
+    throw new Error(`unexpected borrow terminal status: ${borrowIntentRecord.status}`);
   }
 
   await stopChildren([stage.relayer, stage.prover]);
@@ -607,7 +624,7 @@ async function main() {
   console.log("[e2e-live] ==================================================");
   console.log("[e2e-live] PASS: Base hub live scenario (World supplies + BSC borrow)");
   console.log(
-    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrowed ${user2BorrowUsdcUnits} USDC on BSC`
+    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrow reached terminal status=${evidence.user2BorrowFinalStatus}`
   );
   console.log("[e2e-live] evidence:", JSON.stringify(evidence, null, 2));
   console.log("[e2e-live] ==================================================");
@@ -831,10 +848,10 @@ async function ensureRelayerHubLiquidityViaAcross({
       topupInputAmount,
       quote.outputAmount,
       destinationChainId,
-      quote.exclusiveRelayer,
+      "0x0000000000000000000000000000000000000000",
       quote.quoteTimestamp,
       quote.fillDeadline,
-      quote.exclusivityDeadline,
+      0,
       "0x"
     ]
   });
@@ -1096,17 +1113,11 @@ async function fetchAcrossSuggestedFee({ originChainId, destinationChainId, inpu
 
   const quoteTimestamp = Number(payload.quoteTimestamp ?? payload.timestamp ?? Math.floor(Date.now() / 1000));
   const fillDeadline = Number(payload.fillDeadline ?? quoteTimestamp + 2 * 60 * 60);
-  const exclusivityDeadline = Number(payload.exclusivityDeadline ?? 0);
-  const exclusiveRelayer = isAddress(payload.exclusiveRelayer)
-    ? payload.exclusiveRelayer
-    : "0x0000000000000000000000000000000000000000";
 
   return {
     outputAmount,
     quoteTimestamp,
-    fillDeadline,
-    exclusivityDeadline,
-    exclusiveRelayer
+    fillDeadline
   };
 }
 

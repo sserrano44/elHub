@@ -263,7 +263,7 @@ Files:
 
 Responsibilities:
 1. `HubAcrossBorrowDispatcher` sends hub-funded borrow fills over Across to spoke receiver with deterministic message binding.
-2. `SpokeAcrossBorrowReceiver` only accepts callbacks from allowlisted spoke pool and expected fill relayer, and requires message bindings for expected hub chain, hub dispatcher, and hub finalizer before transfers.
+2. `SpokeAcrossBorrowReceiver` only accepts callbacks from allowlisted spoke pool and requires message bindings for expected hub chain, hub dispatcher, and hub finalizer before transfers.
 3. `HubAcrossBorrowFinalizer` permissionlessly verifies borrow-fill proof and records settlement fill evidence exactly once.
 4. Borrow proof backend enforces source receiver allowlist, destination dispatcher/finalizer binding, and source finality + source event inclusion checks.
 5. `HubSettlement` accepts proof-verified borrow fill evidence via `PROOF_FILL_ROLE`.
@@ -289,10 +289,10 @@ Responsibilities:
 
 ### 6.2 Borrow (Base accounting -> Worldchain payout via Across)
 1. User signs EIP-712 intent.
-2. Relayer calls `HubLockManager.lock`.
+2. Relayer calls `HubLockManager.lock` with expiry hint `fillDeadline + 30m` (capped by lock TTL and intent deadline).
 3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
 4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`:
-   1. receiver authenticates source chain, hub dispatcher, hub finalizer, and callback relayer.
+   1. receiver authenticates source chain, hub dispatcher, and hub finalizer.
    2. receiver pays recipient and relayer fee.
    2. receiver emits `BorrowFillRecorded`.
 5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
@@ -304,7 +304,7 @@ Responsibilities:
 1. User signs EIP-712 intent.
 2. Relayer calls `HubLockManager.lock`.
 3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` with the same dispatcher/finalizer/relayer authentication checks.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` with the same source-chain/dispatcher/finalizer authentication checks.
 5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer verifies proof and records fill evidence in settlement.
 7. Prover batches finalize action.
@@ -316,8 +316,9 @@ Responsibilities:
 3. `locked`
 4. `filled`
 5. `awaiting_settlement`
-6. `settled`
-7. `failed`
+6. `expired_unwound`
+7. `settled`
+8. `failed`
 
 ### 6.5 Indexer deposit statuses
 1. `initiated`
@@ -396,17 +397,23 @@ Behavior:
 4. Waits for hub-side Across callback (`PendingDepositRecorded`), then enqueues permissionless proof finalization for inbound deposits.
 5. Watches hub receiver recovery events (`PendingDepositExpired`, `PendingDepositSwept`) to mark terminal deposit states and clear pending tasks.
 6. For borrow submit:
-   1. lock on hub
-   2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher`
-   3. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
-   4. finalize proof on hub via `HubAcrossBorrowFinalizer`
-   5. enqueue prover action
+   1. query deterministic lock preview on hub
+   2. fetch Across quote once using previewed hub amount
+   3. lock on hub with expiry hint (`fillDeadline + 30m`)
+   4. dispatch Across fill from hub via `HubAcrossBorrowDispatcher`
+   5. enqueue persistent lock-unwind task at lock expiry
+   6. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
+   7. finalize proof on hub via `HubAcrossBorrowFinalizer`
+   8. enqueue prover action
 7. For withdraw submit:
-   1. lock on hub
-   2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher` (`intentType=WITHDRAW`)
-   3. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
-   4. finalize proof on hub via `HubAcrossBorrowFinalizer`
-   5. enqueue prover action
+   1. query deterministic lock preview on hub
+   2. fetch Across quote once using previewed hub amount
+   3. lock on hub with expiry hint (`fillDeadline + 30m`)
+   4. dispatch Across fill from hub via `HubAcrossBorrowDispatcher` (`intentType=WITHDRAW`)
+   5. enqueue persistent lock-unwind task at lock expiry
+   6. observe spoke `BorrowFillRecorded` with expected `hubDispatcher` and `hubFinalizer`
+   7. finalize proof on hub via `HubAcrossBorrowFinalizer`
+   8. enqueue prover action
 
 ### 8.2 Indexer service
 File: `/Users/sebas/projects/hubris/services/indexer/src/server.ts`
@@ -543,7 +550,7 @@ Command:
 Expected behavior:
 1. Worldchain USDC supply reaches `pending_fill` then `bridged` then `settled`.
 2. Worldchain ETH->WETH supply reaches `pending_fill` then `bridged` then `settled`.
-3. BSC borrow dispatch emits Across source deposit on hub, destination fill on BSC, proof finalization on hub, then settlement to `settled`.
+3. BSC borrow dispatch emits Across source deposit on hub, destination fill on BSC, proof finalization on hub, then settlement to `settled` or expiry unwind to `expired_unwound` with no lingering active lock.
 
 Operational constraints:
 1. `LIVE_MODE=1` rejects any Tenderly RPC URL usage.
@@ -556,7 +563,7 @@ Operational constraints:
 Enforced in current implementation:
 1. Hub-side lock required before borrow/withdraw finalization.
 2. Lock relayer binding and expiry checks.
-3. Spoke borrow receiver enforces expected source chain + hub dispatcher + hub finalizer + callback relayer before side effects.
+3. Spoke borrow receiver enforces expected source chain + hub dispatcher + hub finalizer before side effects.
 4. Double-fill prevention on spoke.
 5. Batch/intent/deposit replay protections in settlement.
 6. Settlement applies only after verifier success.

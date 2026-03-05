@@ -337,6 +337,10 @@ async function write(client, publicClient, { address, abi, functionName, args })
   throw lastError ?? new Error(`Missing tx hash for ${functionName}`);
 }
 
+async function read(publicClient, { address, abi, functionName, args = [] }) {
+  return publicClient.readContract({ address, abi, functionName, args });
+}
+
 function isTenderlyRpc(url) {
   return typeof url === "string" && url.includes("tenderly.co");
 }
@@ -1251,6 +1255,7 @@ async function main() {
   const depositProofBackendAbi = loadArtifact("AcrossDepositProofBackend").abi;
   const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
   const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
+  const spokeBorrowReceiverAbi = loadArtifact("SpokeAcrossBorrowReceiver").abi;
   const chainlinkOracleAbi = loadArtifact("ChainlinkPriceOracle").abi;
 
   const bridgeAdapterId = keccak256(stringToHex("across-v3"));
@@ -1286,16 +1291,14 @@ async function main() {
         spokeAcrossPools[spoke.network],
         hubAcrossBorrowDispatcher,
         hubAcrossBorrowFinalizer,
-        BigInt(HUB_CHAIN_ID),
-        relayer.address
+        BigInt(HUB_CHAIN_ID)
       ],
       initArgs: [
         deployer.address,
         spokeAcrossPools[spoke.network],
         hubAcrossBorrowDispatcher,
         hubAcrossBorrowFinalizer,
-        BigInt(HUB_CHAIN_ID),
-        relayer.address
+        BigInt(HUB_CHAIN_ID)
       ],
       client: spoke.walletClient,
       publicClient: spoke.publicClient,
@@ -1336,6 +1339,49 @@ async function main() {
       functionName: "setAllowedCaller",
       args: [portal, true]
     });
+    await write(spoke.walletClient, spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "setExpectedHubDispatcher",
+      args: [hubAcrossBorrowDispatcher]
+    });
+    await write(spoke.walletClient, spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "setExpectedHubFinalizer",
+      args: [hubAcrossBorrowFinalizer]
+    });
+    await write(spoke.walletClient, spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "setExpectedHubChainId",
+      args: [BigInt(HUB_CHAIN_ID)]
+    });
+
+    const receiverDispatcher = await read(spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "expectedHubDispatcher"
+    });
+    if (String(receiverDispatcher).toLowerCase() !== hubAcrossBorrowDispatcher.toLowerCase()) {
+      throw new Error(`Spoke ${spoke.network} borrow receiver expectedHubDispatcher mismatch: ${receiverDispatcher}`);
+    }
+    const receiverFinalizer = await read(spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "expectedHubFinalizer"
+    });
+    if (String(receiverFinalizer).toLowerCase() !== hubAcrossBorrowFinalizer.toLowerCase()) {
+      throw new Error(`Spoke ${spoke.network} borrow receiver expectedHubFinalizer mismatch: ${receiverFinalizer}`);
+    }
+    const receiverHubChainId = await read(spoke.publicClient, {
+      address: borrowReceiver,
+      abi: spokeBorrowReceiverAbi,
+      functionName: "expectedHubChainId"
+    });
+    if (BigInt(receiverHubChainId) !== BigInt(HUB_CHAIN_ID)) {
+      throw new Error(`Spoke ${spoke.network} borrow receiver expectedHubChainId mismatch: ${receiverHubChainId}`);
+    }
 
     for (const token of TOKEN_DEFS) {
       await write(spoke.walletClient, spoke.publicClient, {
@@ -1544,12 +1590,40 @@ async function main() {
           hubAcrossSpokePool,
           spokeTokenMap[spoke.network][token.symbol],
           spokeDeployments[spoke.network].borrowReceiver,
-          relayer.address,
           300_000,
           0,
           true
         ]
       });
+
+      const key = await read(hubPublic, {
+        address: hubAcrossBorrowDispatcher,
+        abi: hubAcrossBorrowDispatcherAbi,
+        functionName: "routeKey",
+        args: [hubTokens[token.symbol], BigInt(spoke.chainId)]
+      });
+      const route = await read(hubPublic, {
+        address: hubAcrossBorrowDispatcher,
+        abi: hubAcrossBorrowDispatcherAbi,
+        functionName: "routes",
+        args: [key]
+      });
+      const spokePool = String(route?.spokePool ?? (Array.isArray(route) ? route[0] : ""));
+      const spokeToken = String(route?.spokeToken ?? (Array.isArray(route) ? route[1] : ""));
+      const spokeReceiver = String(route?.spokeReceiver ?? (Array.isArray(route) ? route[2] : ""));
+      const enabled = Boolean(route?.enabled ?? (Array.isArray(route) ? route[5] : false));
+      if (spokePool.toLowerCase() !== hubAcrossSpokePool.toLowerCase()) {
+        throw new Error(`Dispatcher route spokePool mismatch token=${token.symbol} spoke=${spoke.network}`);
+      }
+      if (spokeToken.toLowerCase() !== spokeTokenMap[spoke.network][token.symbol].toLowerCase()) {
+        throw new Error(`Dispatcher route spokeToken mismatch token=${token.symbol} spoke=${spoke.network}`);
+      }
+      if (spokeReceiver.toLowerCase() !== spokeDeployments[spoke.network].borrowReceiver.toLowerCase()) {
+        throw new Error(`Dispatcher route spokeReceiver mismatch token=${token.symbol} spoke=${spoke.network}`);
+      }
+      if (!enabled) {
+        throw new Error(`Dispatcher route disabled token=${token.symbol} spoke=${spoke.network}`);
+      }
     }
   }
 

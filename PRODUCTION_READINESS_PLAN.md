@@ -164,6 +164,7 @@ Implemented:
 8. Added runtime backend toggles:
    - `INDEXER_DB_KIND=json|sqlite`
    - `PROVER_STORE_KIND=json|sqlite`
+9. Relayer tracking now persists lock-expiry unwind tasks; expired outbound locks auto-cancel via `cancelExpiredLock` and intents transition to `expired_unwound`.
 
 Acceptance criteria:
 1. Service restart does not lose in-flight actions.

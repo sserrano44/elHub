@@ -151,6 +151,10 @@ async function write(client, publicClient, { address, abi, functionName, args })
   return hash;
 }
 
+async function read(publicClient, { address, abi, functionName, args = [] }) {
+  return publicClient.readContract({ address, abi, functionName, args });
+}
+
 async function ensureNativeBalance(walletClient, publicClient, target, minBalanceWei, label) {
   if (target.toLowerCase() === walletClient.account.address.toLowerCase()) return;
 
@@ -411,9 +415,8 @@ async function main() {
     spokeAcrossSpokePool,
     hubAcrossBorrowDispatcher,
     hubAcrossBorrowFinalizer,
-    BigInt(HUB_CHAIN_ID),
-    relayer.address
-  ], [deployer.address, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, BigInt(HUB_CHAIN_ID), relayer.address]);
+    BigInt(HUB_CHAIN_ID)
+  ], [deployer.address, spokeAcrossSpokePool, hubAcrossBorrowDispatcher, hubAcrossBorrowFinalizer, BigInt(HUB_CHAIN_ID)]);
   const spokeBorrowReceiver = spokeBorrowReceiverDeployment.proxy;
   const spokeBridgeAdapterDeployment = await deployUUPS(
     spokeWallet,
@@ -436,6 +439,7 @@ async function main() {
   const depositProofBackendAbi = loadArtifact("AcrossDepositProofBackend").abi;
   const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
   const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
+  const spokeBorrowReceiverAbi = loadArtifact("SpokeAcrossBorrowReceiver").abi;
   const erc20Abi = loadArtifact("MockERC20").abi;
   const oracleAbi = loadArtifact("MockOracle").abi;
 
@@ -536,6 +540,24 @@ async function main() {
     functionName: "setAllowedCaller",
     args: [spokePortal, true]
   });
+  await write(spokeWallet, spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "setExpectedHubDispatcher",
+    args: [hubAcrossBorrowDispatcher]
+  });
+  await write(spokeWallet, spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "setExpectedHubFinalizer",
+    args: [hubAcrossBorrowFinalizer]
+  });
+  await write(spokeWallet, spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "setExpectedHubChainId",
+    args: [BigInt(HUB_CHAIN_ID)]
+  });
   for (const row of tokenRows) {
     await write(spokeWallet, spokePublic, {
       address: spokeBridgeAdapter,
@@ -573,8 +595,64 @@ async function main() {
       address: hubAcrossBorrowDispatcher,
       abi: hubAcrossBorrowDispatcherAbi,
       functionName: "setRoute",
-      args: [row.hub, hubAcrossSpokePool, row.spoke, spokeBorrowReceiver, relayer.address, 300_000, true]
+      args: [row.hub, BigInt(SPOKE_CHAIN_ID), hubAcrossSpokePool, row.spoke, spokeBorrowReceiver, 300_000, 0, true]
     });
+  }
+
+  const receiverDispatcher = await read(spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "expectedHubDispatcher"
+  });
+  if (String(receiverDispatcher).toLowerCase() !== hubAcrossBorrowDispatcher.toLowerCase()) {
+    throw new Error(`Spoke borrow receiver expectedHubDispatcher mismatch: ${receiverDispatcher}`);
+  }
+  const receiverFinalizer = await read(spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "expectedHubFinalizer"
+  });
+  if (String(receiverFinalizer).toLowerCase() !== hubAcrossBorrowFinalizer.toLowerCase()) {
+    throw new Error(`Spoke borrow receiver expectedHubFinalizer mismatch: ${receiverFinalizer}`);
+  }
+  const receiverHubChainId = await read(spokePublic, {
+    address: spokeBorrowReceiver,
+    abi: spokeBorrowReceiverAbi,
+    functionName: "expectedHubChainId"
+  });
+  if (BigInt(receiverHubChainId) !== BigInt(HUB_CHAIN_ID)) {
+    throw new Error(`Spoke borrow receiver expectedHubChainId mismatch: ${receiverHubChainId}`);
+  }
+
+  for (const row of tokenRows) {
+    const key = await read(hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "routeKey",
+      args: [row.hub, BigInt(SPOKE_CHAIN_ID)]
+    });
+    const route = await read(hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "routes",
+      args: [key]
+    });
+    const spokePool = String(route?.spokePool ?? (Array.isArray(route) ? route[0] : ""));
+    const spokeToken = String(route?.spokeToken ?? (Array.isArray(route) ? route[1] : ""));
+    const spokeReceiver = String(route?.spokeReceiver ?? (Array.isArray(route) ? route[2] : ""));
+    const enabled = Boolean(route?.enabled ?? (Array.isArray(route) ? route[5] : false));
+    if (spokePool.toLowerCase() !== hubAcrossSpokePool.toLowerCase()) {
+      throw new Error(`Dispatcher route spokePool mismatch for ${row.symbol}: ${spokePool}`);
+    }
+    if (spokeToken.toLowerCase() !== row.spoke.toLowerCase()) {
+      throw new Error(`Dispatcher route spokeToken mismatch for ${row.symbol}: ${spokeToken}`);
+    }
+    if (spokeReceiver.toLowerCase() !== spokeBorrowReceiver.toLowerCase()) {
+      throw new Error(`Dispatcher route spokeReceiver mismatch for ${row.symbol}: ${spokeReceiver}`);
+    }
+    if (!enabled) {
+      throw new Error(`Dispatcher route disabled for ${row.symbol}`);
+    }
   }
 
   console.log("Seeding liquidity + relayer inventory...");
