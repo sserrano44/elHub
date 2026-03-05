@@ -1197,6 +1197,59 @@ contract HubProtocolTest is TestBase {
         assertEq(lockManager.reservedLiquidity(address(hubUSDC)), 0, "reserved liquidity should clear after cancel");
     }
 
+    function test_previewLockReturnsAssetAmountAndMaxExpiry() external {
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), 250e6, user);
+
+        DataTypes.Intent memory intent = _makeIntent(Constants.INTENT_BORROW, 50e6, 612);
+        (address asset, uint256 hubAmount, uint256 maxExpiry) = lockManager.previewLock(intent);
+
+        assertEq(asset, address(hubUSDC), "preview asset should resolve to hub token");
+        assertEq(hubAmount, intent.amount, "preview amount should resolve to hub units");
+        uint256 expectedMaxExpiry = block.timestamp + lockManager.lockTtl();
+        if (expectedMaxExpiry > intent.deadline) expectedMaxExpiry = intent.deadline;
+        assertEq(maxExpiry, expectedMaxExpiry, "preview max expiry should cap by lock ttl and intent deadline");
+    }
+
+    function test_lockExpiryHintCapsAndRejectsPastHint() external {
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), 250e6, user);
+
+        DataTypes.Intent memory hintedIntent = _makeIntent(Constants.INTENT_BORROW, 40e6, 613);
+        bytes memory hintedSig = _signIntent(hintedIntent);
+        uint256 expiryHint = block.timestamp + 5 minutes;
+
+        vm.prank(relayer);
+        bytes32 hintedIntentId = lockManager.lock(hintedIntent, hintedSig, expiryHint);
+
+        (,,,,,,, uint256 hintedExpiry,) = lockManager.locks(hintedIntentId);
+        assertEq(hintedExpiry, expiryHint, "lock expiry should use lower hint");
+
+        DataTypes.Intent memory upperBoundIntent = _makeIntent(Constants.INTENT_BORROW, 35e6, 617);
+        bytes memory upperBoundSig = _signIntent(upperBoundIntent);
+        uint256 aboveMaxHint = upperBoundIntent.deadline + 1 days;
+
+        vm.prank(relayer);
+        bytes32 upperBoundIntentId = lockManager.lock(upperBoundIntent, upperBoundSig, aboveMaxHint);
+        (,,,,,,, uint256 upperBoundExpiry,) = lockManager.locks(upperBoundIntentId);
+        uint256 expectedMaxExpiry = block.timestamp + lockManager.lockTtl();
+        if (expectedMaxExpiry > upperBoundIntent.deadline) expectedMaxExpiry = upperBoundIntent.deadline;
+        assertEq(upperBoundExpiry, expectedMaxExpiry, "hint should not extend expiry beyond max");
+
+        DataTypes.Intent memory badHintIntent = _makeIntent(Constants.INTENT_BORROW, 30e6, 614);
+        bytes memory badHintSig = _signIntent(badHintIntent);
+
+        vm.prank(relayer);
+        vm.expectRevert(
+            abi.encodeWithSelector(HubLockManager.InvalidLockExpiryHint.selector, block.timestamp, block.timestamp)
+        );
+        lockManager.lock(badHintIntent, badHintSig, block.timestamp);
+    }
+
     function test_activeLockCanBeCancelledByRelayerOrOwner() external {
         vm.prank(user);
         hubUSDC.approve(address(market), type(uint256).max);

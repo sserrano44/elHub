@@ -30,7 +30,7 @@ contract SpokeAcrossBorrowReceiverTest is TestBase {
         spokeUsdc = new MockERC20("Spoke USDC", "USDC", 6);
         spokePool = new MockAcrossSpokePool();
         receiver = new SpokeAcrossBorrowReceiver(
-            address(this), address(spokePool), hubDispatcher, hubFinalizer, HUB_CHAIN_ID, relayer
+            address(this), address(spokePool), hubDispatcher, hubFinalizer, HUB_CHAIN_ID
         );
 
         spokeUsdc.mint(address(spokePool), 1_000_000e6);
@@ -68,12 +68,14 @@ contract SpokeAcrossBorrowReceiverTest is TestBase {
         receiver.handleV3AcrossMessage(address(spokeUsdc), 25e6, relayer, message);
     }
 
-    function test_rejectsCallbackRelayerMismatch() external {
+    function test_allowsCallbackFromNonMessageRelayer() external {
         bytes memory message = _encodeMessage(keccak256("relayer-mismatch"), Constants.INTENT_BORROW, 25e6, 1e6);
 
         vm.prank(attacker);
-        vm.expectRevert(abi.encodeWithSelector(SpokeAcrossBorrowReceiver.InvalidCallbackRelayer.selector, relayer, attacker));
         spokePool.relayV3Deposit(8453, keccak256("origin"), 3, address(spokeUsdc), 25e6, address(receiver), message);
+
+        assertEq(spokeUsdc.balanceOf(user), 24e6, "recipient should receive amount minus fee");
+        assertEq(spokeUsdc.balanceOf(relayer), 1e6, "fee should still be paid to relayer encoded by hub message");
     }
 
     function test_rejectsHubDispatcherMismatch() external {

@@ -26,11 +26,6 @@
                 "name": "expectedHubChainId_",
                 "type": "uint256",
                 "internalType": "uint256"
-            },
-            {
-                "name": "expectedFillRelayer_",
-                "type": "address",
-                "internalType": "address"
             }
         ],
         "stateMutability": "nonpayable"
@@ -70,19 +65,6 @@
                 "name": "",
                 "type": "string",
                 "internalType": "string"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "expectedFillRelayer",
-        "inputs": [],
-        "outputs": [
-            {
-                "name": "",
-                "type": "address",
-                "internalType": "address"
             }
         ],
         "stateMutability": "view"
@@ -178,7 +160,7 @@
                 "internalType": "uint256"
             },
             {
-                "name": "callbackRelayer",
+                "name": "",
                 "type": "address",
                 "internalType": "address"
             },
@@ -243,11 +225,6 @@
                 "name": "expectedHubChainId_",
                 "type": "uint256",
                 "internalType": "uint256"
-            },
-            {
-                "name": "expectedFillRelayer_",
-                "type": "address",
-                "internalType": "address"
             }
         ],
         "outputs": [],
@@ -314,19 +291,6 @@
             },
             {
                 "name": "account",
-                "type": "address",
-                "internalType": "address"
-            }
-        ],
-        "outputs": [],
-        "stateMutability": "nonpayable"
-    },
-    {
-        "type": "function",
-        "name": "setExpectedFillRelayer",
-        "inputs": [
-            {
-                "name": "expectedFillRelayer_",
                 "type": "address",
                 "internalType": "address"
             }
@@ -504,19 +468,6 @@
                 "type": "bytes32",
                 "indexed": false,
                 "internalType": "bytes32"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
-        "name": "ExpectedFillRelayerSet",
-        "inputs": [
-            {
-                "name": "fillRelayer",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
             }
         ],
         "anonymous": false
@@ -740,33 +691,6 @@
     },
     {
         "type": "error",
-        "name": "InvalidCallbackRelayer",
-        "inputs": [
-            {
-                "name": "expected",
-                "type": "address",
-                "internalType": "address"
-            },
-            {
-                "name": "got",
-                "type": "address",
-                "internalType": "address"
-            }
-        ]
-    },
-    {
-        "type": "error",
-        "name": "InvalidFillRelayer",
-        "inputs": [
-            {
-                "name": "fillRelayer",
-                "type": "address",
-                "internalType": "address"
-            }
-        ]
-    },
-    {
-        "type": "error",
         "name": "InvalidHubChainId",
         "inputs": [
             {
@@ -896,22 +820,6 @@
                 "name": "length",
                 "type": "uint256",
                 "internalType": "uint256"
-            }
-        ]
-    },
-    {
-        "type": "error",
-        "name": "InvalidMessageRelayer",
-        "inputs": [
-            {
-                "name": "expected",
-                "type": "address",
-                "internalType": "address"
-            },
-            {
-                "name": "got",
-                "type": "address",
-                "internalType": "address"
             }
         ]
     },

@@ -39,7 +39,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address spokePool;
         address spokeToken;
         address spokeReceiver;
-        address exclusiveRelayer;
         uint32 fillDeadlineBuffer;
         uint32 maxQuoteAge;
         bool enabled;
@@ -49,8 +48,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         uint256 outputAmount;
         uint32 quoteTimestamp;
         uint32 fillDeadline;
-        uint32 exclusivityDeadline;
-        address exclusiveRelayer;
     }
 
     struct BorrowDispatchMessage {
@@ -81,7 +78,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address indexed spokePool,
         address indexed spokeToken,
         address spokeReceiver,
-        address exclusiveRelayer,
         uint32 fillDeadlineBuffer,
         bool enabled
     );
@@ -120,10 +116,8 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
     error QuoteExpired(uint32 quoteTimestamp, uint32 maxAge, uint256 currentTimestamp);
     error QuoteTimestampTooFarInFuture(uint32 quoteTimestamp, uint256 currentTimestamp);
     error InvalidQuoteOutputAmount(uint256 outputAmount, uint256 inputAmount);
-    error InvalidQuoteDeadlines(uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline);
+    error InvalidQuoteDeadlines(uint32 quoteTimestamp, uint32 fillDeadline);
     error InvalidQuoteTimestamp();
-    error InvalidExclusiveRelayer(address exclusiveRelayer);
-    error QuoteExclusiveRelayerMismatch(address expected, address got);
 
     constructor(address owner_, address hubFinalizer_) Ownable(owner_) {
         defaultFillDeadlineBuffer = DEFAULT_FILL_DEADLINE_BUFFER;
@@ -183,7 +177,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             spokePool,
             spokeToken,
             spokeReceiver,
-            current.exclusiveRelayer,
             current.fillDeadlineBuffer,
             current.maxQuoteAge,
             enabled
@@ -195,13 +188,10 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address spokePool,
         address spokeToken,
         address spokeReceiver,
-        address exclusiveRelayer,
         uint32 fillDeadlineBuffer,
         bool enabled
     ) external onlyOwner {
-        _setRoute(
-            hubAsset, 0, spokePool, spokeToken, spokeReceiver, exclusiveRelayer, fillDeadlineBuffer, 0, enabled
-        );
+        _setRoute(hubAsset, 0, spokePool, spokeToken, spokeReceiver, fillDeadlineBuffer, 0, enabled);
     }
 
     function setRoute(
@@ -210,7 +200,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address spokePool,
         address spokeToken,
         address spokeReceiver,
-        address exclusiveRelayer,
         uint32 fillDeadlineBuffer,
         uint32 maxQuoteAge,
         bool enabled
@@ -221,7 +210,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             spokePool,
             spokeToken,
             spokeReceiver,
-            exclusiveRelayer,
             fillDeadlineBuffer,
             maxQuoteAge,
             enabled
@@ -234,7 +222,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         address spokePool,
         address spokeToken,
         address spokeReceiver,
-        address exclusiveRelayer,
         uint32 fillDeadlineBuffer,
         uint32 maxQuoteAge,
         bool enabled
@@ -243,19 +230,17 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         if (spokePool == address(0)) revert InvalidSpokePool(spokePool);
         if (spokeToken == address(0)) revert InvalidSpokeToken(spokeToken);
         if (spokeReceiver == address(0)) revert InvalidSpokeReceiver(spokeReceiver);
-        if (enabled && exclusiveRelayer == address(0)) revert InvalidExclusiveRelayer(exclusiveRelayer);
 
         routes[routeKey(hubAsset, destinationChainId)] = Route({
             spokePool: spokePool,
             spokeToken: spokeToken,
             spokeReceiver: spokeReceiver,
-            exclusiveRelayer: exclusiveRelayer,
             fillDeadlineBuffer: fillDeadlineBuffer,
             maxQuoteAge: maxQuoteAge,
             enabled: enabled
         });
 
-        emit RouteSet(hubAsset, spokePool, spokeToken, spokeReceiver, exclusiveRelayer, fillDeadlineBuffer, enabled);
+        emit RouteSet(hubAsset, spokePool, spokeToken, spokeReceiver, fillDeadlineBuffer, enabled);
     }
 
     function pause() external onlyOwner {
@@ -361,7 +346,6 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         if (!route.enabled || route.spokePool == address(0) || route.spokeToken == address(0) || route.spokeReceiver == address(0)) {
             revert RouteNotEnabled(hubAsset);
         }
-        if (route.exclusiveRelayer == address(0)) revert InvalidExclusiveRelayer(route.exclusiveRelayer);
         if (outputToken != route.spokeToken) {
             revert InvalidOutputToken(route.spokeToken, outputToken);
         }
@@ -379,13 +363,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             revert QuoteTimestampTooFarInFuture(quote.quoteTimestamp, block.timestamp);
         }
         if (quote.fillDeadline <= quote.quoteTimestamp || quote.fillDeadline <= block.timestamp) {
-            revert InvalidQuoteDeadlines(quote.quoteTimestamp, quote.fillDeadline, quote.exclusivityDeadline);
-        }
-        if (quote.exclusivityDeadline > quote.fillDeadline) {
-            revert InvalidQuoteDeadlines(quote.quoteTimestamp, quote.fillDeadline, quote.exclusivityDeadline);
-        }
-        if (quote.exclusiveRelayer != address(0) && quote.exclusiveRelayer != route.exclusiveRelayer) {
-            revert QuoteExclusiveRelayerMismatch(route.exclusiveRelayer, quote.exclusiveRelayer);
+            revert InvalidQuoteDeadlines(quote.quoteTimestamp, quote.fillDeadline);
         }
 
         bytes memory acrossMessage = _encodeBorrowDispatchMessage(
@@ -415,10 +393,10 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
             amount,
             quote.outputAmount,
             outputChainId,
-            route.exclusiveRelayer,
+            address(0),
             quote.quoteTimestamp,
             quote.fillDeadline,
-            quote.fillDeadline,
+            0,
             acrossMessage
         );
 
@@ -452,9 +430,7 @@ contract HubAcrossBorrowDispatcher is Ownable, Initializable, UUPSUpgradeable, P
         return AcrossQuoteParams({
             outputAmount: amount,
             quoteTimestamp: quoteTimestamp,
-            fillDeadline: fillDeadline,
-            exclusivityDeadline: 0,
-            exclusiveRelayer: address(0)
+            fillDeadline: fillDeadline
         });
     }
 

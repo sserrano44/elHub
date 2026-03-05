@@ -321,6 +321,92 @@
     },
     {
         "type": "function",
+        "name": "lock",
+        "inputs": [
+            {
+                "name": "intent",
+                "type": "tuple",
+                "internalType": "struct DataTypes.Intent",
+                "components": [
+                    {
+                        "name": "intentType",
+                        "type": "uint8",
+                        "internalType": "uint8"
+                    },
+                    {
+                        "name": "user",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "inputChainId",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "outputChainId",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "inputToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "outputToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "amount",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "recipient",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "maxRelayerFee",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "nonce",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "deadline",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    }
+                ]
+            },
+            {
+                "name": "signature",
+                "type": "bytes",
+                "internalType": "bytes"
+            },
+            {
+                "name": "expiryHint",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "intentId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
         "name": "lockTtl",
         "inputs": [],
         "outputs": [
@@ -433,6 +519,92 @@
                 "name": "",
                 "type": "bool",
                 "internalType": "bool"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "previewLock",
+        "inputs": [
+            {
+                "name": "intent",
+                "type": "tuple",
+                "internalType": "struct DataTypes.Intent",
+                "components": [
+                    {
+                        "name": "intentType",
+                        "type": "uint8",
+                        "internalType": "uint8"
+                    },
+                    {
+                        "name": "user",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "inputChainId",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "outputChainId",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "inputToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "outputToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "amount",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "recipient",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "maxRelayerFee",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "nonce",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "deadline",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    }
+                ]
+            }
+        ],
+        "outputs": [
+            {
+                "name": "asset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "hubAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "maxExpiry",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "stateMutability": "view"
@@ -913,6 +1085,22 @@
     },
     {
         "type": "error",
+        "name": "IntentExpired",
+        "inputs": [
+            {
+                "name": "deadline",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "currentTimestamp",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ]
+    },
+    {
+        "type": "error",
         "name": "InvalidAmountScaling",
         "inputs": [
             {
@@ -945,6 +1133,22 @@
                 "name": "intentType",
                 "type": "uint8",
                 "internalType": "uint8"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidLockExpiryHint",
+        "inputs": [
+            {
+                "name": "expiryHint",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "currentTimestamp",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ]
     },

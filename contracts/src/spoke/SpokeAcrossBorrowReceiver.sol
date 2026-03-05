@@ -37,7 +37,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
     address public expectedHubDispatcher;
     address public expectedHubFinalizer;
     uint256 public expectedHubChainId;
-    address public expectedFillRelayer;
 
     mapping(bytes32 => bool) public intentFilled;
 
@@ -45,7 +44,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
     event ExpectedHubDispatcherSet(address indexed hubDispatcher);
     event ExpectedHubFinalizerSet(address indexed hubFinalizer);
     event ExpectedHubChainIdSet(uint256 indexed hubChainId);
-    event ExpectedFillRelayerSet(address indexed fillRelayer);
     event BorrowFillRecorded(
         bytes32 indexed intentId,
         uint8 indexed intentType,
@@ -66,7 +64,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
     error InvalidSpokePool(address spokePool);
     error InvalidHubDispatcher(address hubDispatcher);
     error UnauthorizedSpokePool(address caller);
-    error InvalidFillRelayer(address fillRelayer);
     error InvalidHubChainId(uint256 hubChainId);
     error InvalidMessageLength(uint256 length);
     error InvalidSourceChain(uint256 expected, uint256 got);
@@ -74,9 +71,7 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
     error InvalidHubFinalizer(address finalizer);
     error InvalidMessageHubDispatcher(address expected, address got);
     error InvalidMessageHubFinalizer(address expected, address got);
-    error InvalidCallbackRelayer(address expected, address got);
     error InvalidMessageUser();
-    error InvalidMessageRelayer(address expected, address got);
     error InvalidMessageAsset();
     error InvalidMessageAmount();
     error InvalidMessageFee(uint256 fee, uint256 amount);
@@ -89,14 +84,12 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         address spokePool_,
         address expectedHubDispatcher_,
         address expectedHubFinalizer_,
-        uint256 expectedHubChainId_,
-        address expectedFillRelayer_
+        uint256 expectedHubChainId_
     ) {
         if (spokePool_ == address(0)) revert InvalidSpokePool(spokePool_);
         if (expectedHubDispatcher_ == address(0)) revert InvalidHubDispatcher(expectedHubDispatcher_);
         if (expectedHubFinalizer_ == address(0)) revert InvalidHubFinalizer(expectedHubFinalizer_);
         if (expectedHubChainId_ == 0) revert InvalidHubChainId(expectedHubChainId_);
-        if (expectedFillRelayer_ == address(0)) revert InvalidFillRelayer(expectedFillRelayer_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(RECEIVER_ADMIN_ROLE, admin);
@@ -109,8 +102,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         emit ExpectedHubFinalizerSet(expectedHubFinalizer_);
         expectedHubChainId = expectedHubChainId_;
         emit ExpectedHubChainIdSet(expectedHubChainId_);
-        expectedFillRelayer = expectedFillRelayer_;
-        emit ExpectedFillRelayerSet(expectedFillRelayer_);
         _disableInitializers();
     }
 
@@ -119,14 +110,12 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         address spokePool_,
         address expectedHubDispatcher_,
         address expectedHubFinalizer_,
-        uint256 expectedHubChainId_,
-        address expectedFillRelayer_
+        uint256 expectedHubChainId_
     ) external initializer {
         if (spokePool_ == address(0)) revert InvalidSpokePool(spokePool_);
         if (expectedHubDispatcher_ == address(0)) revert InvalidHubDispatcher(expectedHubDispatcher_);
         if (expectedHubFinalizer_ == address(0)) revert InvalidHubFinalizer(expectedHubFinalizer_);
         if (expectedHubChainId_ == 0) revert InvalidHubChainId(expectedHubChainId_);
-        if (expectedFillRelayer_ == address(0)) revert InvalidFillRelayer(expectedFillRelayer_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(RECEIVER_ADMIN_ROLE, admin);
@@ -139,8 +128,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         emit ExpectedHubFinalizerSet(expectedHubFinalizer_);
         expectedHubChainId = expectedHubChainId_;
         emit ExpectedHubChainIdSet(expectedHubChainId_);
-        expectedFillRelayer = expectedFillRelayer_;
-        emit ExpectedFillRelayerSet(expectedFillRelayer_);
     }
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
@@ -169,23 +156,14 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         emit ExpectedHubChainIdSet(expectedHubChainId_);
     }
 
-    function setExpectedFillRelayer(address expectedFillRelayer_) external onlyRole(RECEIVER_ADMIN_ROLE) {
-        if (expectedFillRelayer_ == address(0)) revert InvalidFillRelayer(expectedFillRelayer_);
-        expectedFillRelayer = expectedFillRelayer_;
-        emit ExpectedFillRelayerSet(expectedFillRelayer_);
-    }
-
     function handleV3AcrossMessage(
         address tokenSent,
         uint256 amountReceived,
-        address callbackRelayer,
+        address,
         bytes calldata message
     ) external {
         if (msg.sender != spokePool) revert UnauthorizedSpokePool(msg.sender);
         if (message.length != BORROW_DISPATCH_MESSAGE_BYTES) revert InvalidMessageLength(message.length);
-        if (callbackRelayer != expectedFillRelayer) {
-            revert InvalidCallbackRelayer(expectedFillRelayer, callbackRelayer);
-        }
 
         BorrowDispatchMessage memory decoded = abi.decode(message, (BorrowDispatchMessage));
 
@@ -203,9 +181,6 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
         }
         if (decoded.user == address(0) || decoded.recipient == address(0) || decoded.relayer == address(0)) {
             revert InvalidMessageUser();
-        }
-        if (decoded.relayer != callbackRelayer) {
-            revert InvalidMessageRelayer(callbackRelayer, decoded.relayer);
         }
         if (decoded.intentType != Constants.INTENT_BORROW && decoded.intentType != Constants.INTENT_WITHDRAW) {
             revert InvalidIntentType(decoded.intentType);

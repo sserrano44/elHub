@@ -33,8 +33,6 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
     address internal recipient;
     address internal spokeReceiver;
     address internal hubFinalizer;
-    address internal routeExclusiveRelayer;
-
     MockERC20 internal hubUsdc;
     MockERC20 internal spokeUsdc;
     MockAcrossSpokePool internal spokePool;
@@ -46,7 +44,6 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
         recipient = vm.addr(0xA11CF);
         spokeReceiver = vm.addr(0xCA11);
         hubFinalizer = vm.addr(0xF1A1);
-        routeExclusiveRelayer = relayer;
 
         hubUsdc = new MockERC20("Hub USDC", "USDC", 6);
         spokeUsdc = new MockERC20("Spoke USDC", "USDC", 6);
@@ -58,42 +55,25 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
         hubUsdc.mint(relayer, 1_000_000e6);
     }
 
-    function test_setRouteRejectsEnabledRouteWithoutExclusiveRelayer() external {
-        vm.expectRevert(abi.encodeWithSelector(HubAcrossBorrowDispatcher.InvalidExclusiveRelayer.selector, address(0)));
+    function test_dispatchRevertsWhenQuoteFillDeadlineIsNotAfterQuoteTimestamp() external {
         dispatcher.setRoute(
             address(hubUsdc),
             DESTINATION_CHAIN_ID,
             address(spokePool),
             address(spokeUsdc),
             spokeReceiver,
-            address(0),
-            300_000,
-            1 hours,
-            true
-        );
-    }
-
-    function test_dispatchRevertsOnQuoteExclusiveRelayerMismatch() external {
-        dispatcher.setRoute(
-            address(hubUsdc),
-            DESTINATION_CHAIN_ID,
-            address(spokePool),
-            address(spokeUsdc),
-            spokeReceiver,
-            routeExclusiveRelayer,
             300_000,
             1 hours,
             true
         );
 
-        HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote = _quote(DISPATCH_AMOUNT, vm.addr(0xDEAD), 0);
+        HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote = _quote(DISPATCH_AMOUNT);
+        quote.fillDeadline = quote.quoteTimestamp;
 
         vm.startPrank(relayer);
         hubUsdc.approve(address(dispatcher), DISPATCH_AMOUNT);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                HubAcrossBorrowDispatcher.QuoteExclusiveRelayerMismatch.selector, routeExclusiveRelayer, vm.addr(0xDEAD)
-            )
+            abi.encodeWithSelector(HubAcrossBorrowDispatcher.InvalidQuoteDeadlines.selector, quote.quoteTimestamp, quote.fillDeadline)
         );
         dispatcher.dispatchBorrowFill(
             keccak256("mismatch"),
@@ -111,20 +91,19 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
         vm.stopPrank();
     }
 
-    function test_dispatchUsesRouteExclusiveRelayerAndFullWindowExclusivity() external {
+    function test_dispatchUsesPublicFillParamsWithNoExclusivity() external {
         dispatcher.setRoute(
             address(hubUsdc),
             DESTINATION_CHAIN_ID,
             address(spokePool),
             address(spokeUsdc),
             spokeReceiver,
-            routeExclusiveRelayer,
             300_000,
             1 hours,
             true
         );
 
-        HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote = _quote(DISPATCH_AMOUNT, address(0), 0);
+        HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote = _quote(DISPATCH_AMOUNT);
 
         vm.startPrank(relayer);
         hubUsdc.approve(address(dispatcher), DISPATCH_AMOUNT);
@@ -166,9 +145,9 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
                 address _caller
             ) = abi.decode(entry.data, (address, address, uint256, uint256, uint256, address, uint32, uint32, uint32, bytes, address));
 
-            assertEq(exclusiveRelayer, routeExclusiveRelayer, "route exclusive relayer must be enforced");
+            assertEq(exclusiveRelayer, address(0), "exclusive relayer must be disabled");
             assertTrue(fillDeadline > quoteTimestamp, "fill deadline must be after quote timestamp");
-            assertEq(uint256(exclusivityDeadline), uint256(fillDeadline), "exclusivity window must span full fill window");
+            assertEq(uint256(exclusivityDeadline), 0, "exclusivity window must be disabled");
             _inputToken;
             _outputToken;
             _inputAmount;
@@ -183,18 +162,12 @@ contract HubAcrossBorrowDispatcherTest is TestBase {
         assertTrue(found, "expected V3FundsDeposited log");
     }
 
-    function _quote(uint256 outputAmount, address exclusiveRelayer, uint32 exclusivityDeadline)
-        internal
-        view
-        returns (HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote)
-    {
+    function _quote(uint256 outputAmount) internal view returns (HubAcrossBorrowDispatcher.AcrossQuoteParams memory quote) {
         uint32 nowTs = uint32(block.timestamp);
         quote = HubAcrossBorrowDispatcher.AcrossQuoteParams({
             outputAmount: outputAmount,
             quoteTimestamp: nowTs,
-            fillDeadline: nowTs + 2 hours,
-            exclusivityDeadline: exclusivityDeadline,
-            exclusiveRelayer: exclusiveRelayer
+            fillDeadline: nowTs + 2 hours
         });
     }
 }

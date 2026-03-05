@@ -57,6 +57,8 @@ contract HubLockManager is Ownable, Initializable, UUPSUpgradeable, Pausable, Re
     error InvalidSettlement(address settlement);
     error InvalidTokenDecimals(uint8 decimals);
     error InvalidAmountScaling(uint256 amount, uint8 fromDecimals, uint8 toDecimals);
+    error InvalidLockExpiryHint(uint256 expiryHint, uint256 currentTimestamp);
+    error IntentExpired(uint256 deadline, uint256 currentTimestamp);
 
     modifier onlySettlement() {
         if (msg.sender != settlement) revert UnauthorizedSettlement(msg.sender);
@@ -111,6 +113,55 @@ contract HubLockManager is Ownable, Initializable, UUPSUpgradeable, Pausable, Re
         whenNotPaused
         returns (bytes32 intentId)
     {
+        return _lock(intent, signature, 0);
+    }
+
+    function lock(DataTypes.Intent calldata intent, bytes calldata signature, uint256 expiryHint)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (bytes32 intentId)
+    {
+        return _lock(intent, signature, expiryHint);
+    }
+
+    function previewLock(DataTypes.Intent calldata intent)
+        external
+        view
+        returns (address asset, uint256 hubAmount, uint256 maxExpiry)
+    {
+        if (intent.intentType != Constants.INTENT_BORROW && intent.intentType != Constants.INTENT_WITHDRAW) {
+            revert InvalidIntentType(intent.intentType);
+        }
+        if (block.timestamp > intent.deadline) {
+            revert IntentExpired(intent.deadline, block.timestamp);
+        }
+
+        asset = _resolveHubAsset(intent.outputChainId, intent.outputToken);
+        hubAmount = _toHubUnits(intent.outputChainId, asset, intent.amount);
+
+        uint256 liquidity = moneyMarket.availableLiquidity(asset);
+        uint256 reserved = reservedLiquidity[asset];
+        uint256 availableAfterReservations = liquidity > reserved ? liquidity - reserved : 0;
+        if (availableAfterReservations < hubAmount) {
+            revert InsufficientHubLiquidity(asset, hubAmount, availableAfterReservations);
+        }
+
+        bool canLock;
+        if (intent.intentType == Constants.INTENT_BORROW) {
+            canLock = riskManager.canLockBorrow(intent.user, asset, hubAmount);
+        } else {
+            canLock = riskManager.canLockWithdraw(intent.user, asset, hubAmount);
+        }
+        if (!canLock) revert RiskCheckFailed(bytes32(0));
+
+        maxExpiry = _effectiveLockExpiry(intent.deadline, 0);
+    }
+
+    function _lock(DataTypes.Intent calldata intent, bytes calldata signature, uint256 expiryHint)
+        internal
+        returns (bytes32 intentId)
+    {
         if (intent.intentType != Constants.INTENT_BORROW && intent.intentType != Constants.INTENT_WITHDRAW) {
             revert InvalidIntentType(intent.intentType);
         }
@@ -138,10 +189,7 @@ contract HubLockManager is Ownable, Initializable, UUPSUpgradeable, Pausable, Re
         }
         if (!canLock) revert RiskCheckFailed(intentId);
 
-        uint256 expiry = block.timestamp + lockTtl;
-        if (expiry > intent.deadline) {
-            expiry = intent.deadline;
-        }
+        uint256 expiry = _effectiveLockExpiry(intent.deadline, expiryHint);
 
         DataTypes.Lock memory lockData = DataTypes.Lock({
             intentId: intentId,
@@ -268,5 +316,20 @@ contract HubLockManager is Ownable, Initializable, UUPSUpgradeable, Pausable, Re
     function _pow10(uint8 exponent) internal pure returns (uint256) {
         if (exponent > 77) revert InvalidTokenDecimals(exponent);
         return 10 ** uint256(exponent);
+    }
+
+    function _effectiveLockExpiry(uint256 intentDeadline, uint256 expiryHint) internal view returns (uint256 expiry) {
+        expiry = block.timestamp + lockTtl;
+        if (expiry > intentDeadline) {
+            expiry = intentDeadline;
+        }
+        if (expiryHint != 0) {
+            if (expiryHint <= block.timestamp) {
+                revert InvalidLockExpiryHint(expiryHint, block.timestamp);
+            }
+            if (expiryHint < expiry) {
+                expiry = expiryHint;
+            }
+        }
     }
 }
