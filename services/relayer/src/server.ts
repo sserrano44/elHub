@@ -6,7 +6,6 @@ import {
   createPublicClient,
   createWalletClient,
   decodeAbiParameters,
-  decodeEventLog,
   defineChain,
   encodeAbiParameters,
   http,
@@ -49,8 +48,12 @@ type AcrossQuoteParams = {
   outputAmount: bigint;
   quoteTimestamp: number;
   fillDeadline: number;
-  exclusivityDeadline: number;
-  exclusiveRelayer: Address;
+};
+
+type LockPreview = {
+  asset: Address;
+  hubAmount: bigint;
+  maxExpiry: bigint;
 };
 
 enum IntentType {
@@ -151,6 +154,7 @@ const finalizationWorkerIntervalMs = Number(process.env.RELAYER_FINALIZATION_WOR
 const finalizationRetryBaseDelayMs = Number(process.env.RELAYER_FINALIZATION_RETRY_BASE_MS ?? "2000");
 const finalizationRetryMaxDelayMs = Number(process.env.RELAYER_FINALIZATION_RETRY_MAX_MS ?? "300000");
 const finalizationMaxAttempts = Number(process.env.RELAYER_FINALIZATION_MAX_ATTEMPTS ?? "20");
+const lockUnwindGraceSeconds = Number(process.env.RELAYER_LOCK_UNWIND_GRACE_SECONDS ?? "1800");
 
 const spokeToHub = JSON.parse(process.env.SPOKE_TO_HUB_TOKEN_MAP ?? "{}") as Record<string, Address>;
 
@@ -196,7 +200,7 @@ const acrossReceiverAbi = parseAbi([
   "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
 const acrossBorrowDispatcherAbi = parseAbi([
-  "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset,(uint256 outputAmount,uint32 quoteTimestamp,uint32 fillDeadline,uint32 exclusivityDeadline,address exclusiveRelayer) quote) returns (bytes32)"
+  "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset,(uint256 outputAmount,uint32 quoteTimestamp,uint32 fillDeadline) quote) returns (bytes32)"
 ]);
 const acrossBorrowFinalizerAbi = parseAbi([
   "function finalizeBorrowFill(bytes proof,(uint256 sourceChainId,bytes32 intentId,uint8 intentType,address user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
@@ -322,54 +326,51 @@ app.post("/intent/submit", async (req, res) => {
       throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
     }
 
-    const previewLockAmount = await previewHubLockAmount(intent.outputChainId, hubAsset, intent.amount);
-    if (previewLockAmount <= 0n) {
+    const preview = await previewHubLock(intent);
+    if (preview.asset.toLowerCase() !== hubAsset.toLowerCase()) {
+      throw new Error(
+        `preview lock asset mismatch for ${intentId}: expected=${hubAsset} got=${preview.asset}`
+      );
+    }
+    if (preview.hubAmount <= 0n) {
       throw new Error(`preview lock amount must be > 0 for intent ${intentId}`);
     }
 
-    let acrossQuote = await resolveBorrowDispatchQuote({
+    const acrossQuote = await resolveBorrowDispatchQuote({
       originChainId: hubChainId,
       destinationChainId: intent.outputChainId,
       inputToken: hubAsset,
       outputToken: intent.outputToken,
-      amount: previewLockAmount,
+      amount: preview.hubAmount,
       recipient: spokeBorrowReceiverAddress
     });
+    const expiryHint = computeLockExpiryHint(acrossQuote.fillDeadline);
 
     await upsertIntent(intentId, intent, "pending_lock", {
       relayerFee: relayerFee.toString(),
-      relayer: relayerAccount.address
+      relayer: relayerAccount.address,
+      lockAmountPreview: preview.hubAmount.toString(),
+      lockMaxExpiry: preview.maxExpiry.toString(),
+      fillDeadline: acrossQuote.fillDeadline
     });
 
     const lockTx = await hubWallet.writeContract({
       abi: HubLockManagerAbi,
       address: lockManagerAddress,
       functionName: "lock",
-      args: [intent, signature],
+      args: [intent, signature, expiryHint],
       account: relayerAccount
     });
     const lockReceipt = await hubPublic.waitForTransactionReceipt({ hash: lockTx });
-    let lockAmount = extractLockAmountFromReceipt(lockReceipt, intentId);
-    if (lockAmount === undefined) {
-      try {
-        lockAmount = await fetchLockAmount(intentId, lockReceipt.blockNumber);
-      } catch (error) {
-        if (!isUnknownBlockReadError(error)) throw error;
-        lockAmount = await fetchLockAmount(intentId);
-      }
-    }
+    const lockState = await fetchLockState(intentId, lockReceipt.blockNumber).catch(async (error) => {
+      if (!isUnknownBlockReadError(error)) throw error;
+      return fetchLockState(intentId);
+    });
+    const lockAmount = lockState.amount;
+    const lockExpiry = lockState.expiry;
+
     if (lockAmount <= 0n) {
       throw new Error(`lock amount must be > 0 for intent ${intentId}`);
-    }
-    if (lockAmount !== previewLockAmount) {
-      acrossQuote = await resolveBorrowDispatchQuote({
-        originChainId: hubChainId,
-        destinationChainId: intent.outputChainId,
-        inputToken: hubAsset,
-        outputToken: intent.outputToken,
-        amount: lockAmount,
-        recipient: spokeBorrowReceiverAddress
-      });
     }
 
     const relayerHubBalance = await hubPublic.readContract({
@@ -427,7 +428,28 @@ app.post("/intent/submit", async (req, res) => {
       throw dispatchError;
     }
 
-    await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx, lockAmount: lockAmount.toString() });
+    await updateIntentStatus(intentId, "locked", {
+      lockTx,
+      dispatchTx,
+      lockAmount: lockAmount.toString(),
+      lockExpiry: lockExpiry.toString(),
+      lockExpiryIso: new Date(Number(lockExpiry) * 1000).toISOString(),
+      quoteTimestamp: acrossQuote.quoteTimestamp,
+      fillDeadline: acrossQuote.fillDeadline,
+      fillDeadlineIso: new Date(acrossQuote.fillDeadline * 1000).toISOString(),
+      lockExpiryHint: expiryHint.toString()
+    });
+
+    enqueueLockUnwindTask({
+      intentId,
+      lockAmount,
+      lockExpiry,
+      fillDeadline: BigInt(acrossQuote.fillDeadline),
+      hubAsset,
+      lockTx,
+      dispatchTx
+    });
+    saveRelayerRuntimeState();
 
     auditLog(req as RequestWithMeta, "submit_ok", {
       intentId,
@@ -771,6 +793,7 @@ async function handleSpokeBorrowFillLog(log: {
 
   const existing = await fetchIntent(intentId);
   if (existing?.status === "settled" || existing?.status === "awaiting_settlement") {
+    delete relayerState.tasks[lockUnwindTaskId(intentId)];
     return;
   }
   if (existing) {
@@ -809,8 +832,8 @@ async function handleSpokeBorrowFillLog(log: {
     return;
   }
 
-  const lockAmount = await fetchLockAmount(intentId).catch(() => undefined);
-  if (lockAmount !== undefined && hubFill.amount > lockAmount) {
+  const lockState = await fetchLockState(intentId).catch(() => undefined);
+  if (lockState && hubFill.amount > lockState.amount) {
     console.warn(`Skipping outbound fill ${intentId} because converted amount exceeds lock`);
     return;
   }
@@ -836,6 +859,8 @@ async function handleSpokeBorrowFillLog(log: {
     sourceReceiptsRoot,
     sourceReceiver: spokeBorrowReceiverAddress
   };
+
+  delete relayerState.tasks[lockUnwindTaskId(intentId)];
 
   enqueueBorrowFillFinalizationTask({
     intentId,
@@ -944,6 +969,10 @@ function borrowFillFinalizationTaskId(witness: BorrowFillWitness): string {
   ].join(":");
 }
 
+function lockUnwindTaskId(intentId: Hex): string {
+  return `lock-unwind:${intentId.toLowerCase()}`;
+}
+
 function enqueueDepositFinalizationTask(input: {
   pendingId: Hex;
   witness: DepositWitness;
@@ -1030,6 +1059,42 @@ function enqueueBorrowFillFinalizationTask(input: {
   } as FinalizationTask;
 }
 
+function enqueueLockUnwindTask(input: {
+  intentId: Hex;
+  lockAmount: bigint;
+  lockExpiry: bigint;
+  fillDeadline: bigint;
+  hubAsset: Address;
+  lockTx: Hex;
+  dispatchTx: Hex;
+}) {
+  const id = lockUnwindTaskId(input.intentId);
+  const now = Date.now();
+  const existing = relayerState.tasks[id];
+  if (existing?.terminal) return;
+
+  const nextAttemptAt = bigintTimestampToMs(input.lockExpiry);
+  const payload: LockUnwindTaskPayload = {
+    intentId: input.intentId,
+    lockAmount: input.lockAmount.toString(),
+    lockExpiry: input.lockExpiry.toString(),
+    fillDeadline: input.fillDeadline.toString(),
+    hubAsset: input.hubAsset,
+    lockTx: input.lockTx,
+    dispatchTx: input.dispatchTx
+  };
+
+  relayerState.tasks[id] = {
+    id,
+    kind: "lock_unwind",
+    payload,
+    attempts: existing?.attempts ?? 0,
+    nextAttemptAt: existing ? Math.min(existing.nextAttemptAt, nextAttemptAt) : nextAttemptAt,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  } as FinalizationTask;
+}
+
 async function processFinalizationQueue() {
   if (isProcessingFinalizationQueue) return;
   isProcessingFinalizationQueue = true;
@@ -1060,6 +1125,8 @@ async function processFinalizationTask(task: FinalizationTask) {
       await runDepositFinalizationTask(task);
     } else if (task.kind === "borrow_fill_finalization") {
       await runBorrowFillFinalizationTask(task);
+    } else if (task.kind === "lock_unwind") {
+      await runLockUnwindTask(task);
     } else {
       task.terminal = true;
       task.terminalReason = "unknown_task_kind";
@@ -1069,7 +1136,9 @@ async function processFinalizationTask(task: FinalizationTask) {
     const message = (error as Error).message;
     const terminalFailure = task.kind === "deposit_finalization"
       ? isTerminalDepositFinalizationError(message)
-      : isTerminalBorrowFinalizationError(message);
+      : task.kind === "borrow_fill_finalization"
+      ? isTerminalBorrowFinalizationError(message)
+      : isTerminalLockUnwindError(message);
 
     if (terminalFailure || task.attempts >= finalizationMaxAttempts) {
       task.terminal = true;
@@ -1086,7 +1155,7 @@ async function processFinalizationTask(task: FinalizationTask) {
         }).catch((statusError) => {
           console.warn(`Failed to persist terminal deposit status ${payload.depositId}`, statusError);
         });
-      } else {
+      } else if (task.kind === "borrow_fill_finalization") {
         const payload = task.payload as BorrowFillFinalizationTaskPayload;
         const cancelTx = await cancelLockBestEffort(payload.intentId);
         await updateIntentStatus(payload.intentId, "failed", {
@@ -1096,6 +1165,17 @@ async function processFinalizationTask(task: FinalizationTask) {
           terminalReason: task.terminalReason
         }).catch((statusError) => {
           console.warn(`Failed to persist borrow terminal failure ${payload.intentId}`, statusError);
+        });
+        delete relayerState.tasks[lockUnwindTaskId(payload.intentId)];
+      } else if (task.kind === "lock_unwind") {
+        const payload = task.payload as LockUnwindTaskPayload;
+        await updateIntentStatus(payload.intentId, "failed", {
+          error: message,
+          retryCount: task.attempts,
+          terminalReason: task.terminalReason,
+          lockExpiry: payload.lockExpiry
+        }).catch((statusError) => {
+          console.warn(`Failed to persist unwind terminal failure ${payload.intentId}`, statusError);
         });
       }
     } else {
@@ -1144,6 +1224,7 @@ async function runDepositFinalizationTask(task: FinalizationTask) {
 
 async function runBorrowFillFinalizationTask(task: FinalizationTask) {
   const payload = task.payload as BorrowFillFinalizationTaskPayload;
+  delete relayerState.tasks[lockUnwindTaskId(payload.intentId)];
   const witness = fromBorrowFillWitnessWire(payload.witness);
   const sourceEvidence = fromSourceBorrowFillEvidenceWire(payload.sourceEvidence);
 
@@ -1181,6 +1262,61 @@ async function runBorrowFillFinalizationTask(task: FinalizationTask) {
   });
 
   delete relayerState.tasks[task.id];
+}
+
+async function runLockUnwindTask(task: FinalizationTask) {
+  const payload = task.payload as LockUnwindTaskPayload;
+  const current = await fetchIntent(payload.intentId).catch(() => undefined);
+  if (current && shouldDropLockUnwindTask(current.status)) {
+    delete relayerState.tasks[task.id];
+    return;
+  }
+
+  const lockExpiry = BigInt(payload.lockExpiry);
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  if (nowSec < lockExpiry) {
+    task.nextAttemptAt = bigintTimestampToMs(lockExpiry);
+    task.updatedAt = Date.now();
+    return;
+  }
+
+  try {
+    const cancelTx = await cancelExpiredLockBestEffort(payload.intentId);
+    if (!cancelTx) {
+      delete relayerState.tasks[task.id];
+      return;
+    }
+
+    await updateIntentStatus(payload.intentId, "expired_unwound", {
+      lockCancelTx: cancelTx,
+      lockExpiry: payload.lockExpiry,
+      fillDeadline: payload.fillDeadline,
+      lockAmount: payload.lockAmount,
+      hubAsset: payload.hubAsset,
+      lockTx: payload.lockTx,
+      dispatchTx: payload.dispatchTx
+    });
+
+    auditLog(undefined, "lock_expiry_unwound", {
+      taskId: task.id,
+      intentId: payload.intentId,
+      cancelTx,
+      lockExpiry: payload.lockExpiry
+    });
+    delete relayerState.tasks[task.id];
+  } catch (error) {
+    const message = String((error as Error).message ?? "").toLowerCase();
+    if (message.includes("locknotexpired")) {
+      task.nextAttemptAt = Date.now() + 15_000;
+      task.updatedAt = Date.now();
+      return;
+    }
+    if (message.includes("locknotactive") || message.includes("locknotfound")) {
+      delete relayerState.tasks[task.id];
+      return;
+    }
+    throw error;
+  }
 }
 
 async function handleHubPendingDepositLog(log: {
@@ -1568,7 +1704,10 @@ async function upsertDepositFinalizationStatus(
   });
 }
 
-async function fetchLockAmount(intentId: Hex, blockNumber?: bigint): Promise<bigint> {
+async function fetchLockState(
+  intentId: Hex,
+  blockNumber?: bigint
+): Promise<{ amount: bigint; expiry: bigint; status: number }> {
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const lock = await hubPublic.readContract({
@@ -1583,18 +1722,28 @@ async function fetchLockAmount(intentId: Hex, blockNumber?: bigint): Promise<big
       (lock as { amount?: unknown }).amount
       ?? (Array.isArray(lock) ? lock[4] : undefined)
     );
-    if (amount !== undefined && amount > 0n) {
-      return amount;
+    const expiry = asBigInt(
+      (lock as { expiry?: unknown }).expiry
+      ?? (Array.isArray(lock) ? lock[7] : undefined)
+    );
+    const status = asNumber(
+      (lock as { status?: unknown }).status
+      ?? (Array.isArray(lock) ? lock[8] : undefined)
+    );
+    if (amount !== undefined && amount > 0n && expiry !== undefined && status !== undefined) {
+      return { amount, expiry, status };
     }
-    if (amount !== undefined && blockNumber !== undefined) {
+    if ((amount !== undefined || expiry !== undefined || status !== undefined) && blockNumber !== undefined) {
       // Receipt block should already include the lock write, but some RPC backends can lag briefly.
       await sleep(200 * attempt);
       continue;
     }
-    if (amount !== undefined) return amount;
+    if (amount !== undefined && expiry !== undefined && status !== undefined) {
+      return { amount, expiry, status };
+    }
     await sleep(100 * attempt);
   }
-  throw new Error(`unable to read lock amount for ${intentId}`);
+  throw new Error(`unable to read lock state for ${intentId}`);
 }
 
 async function cancelLockBestEffort(intentId: Hex): Promise<Hex | undefined> {
@@ -1614,33 +1763,50 @@ async function cancelLockBestEffort(intentId: Hex): Promise<Hex | undefined> {
   }
 }
 
-function extractLockAmountFromReceipt(
-  receipt: { logs: Array<{ address: Address; data: Hex; topics: readonly Hex[] }> },
-  intentId: Hex
-): bigint | undefined {
-  for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== lockManagerAddress.toLowerCase()) continue;
-    try {
-      const decoded = decodeEventLog({
-        abi: HubLockManagerAbi,
-        data: log.data,
-        topics: log.topics as [Hex, ...Hex[]]
-      }) as { eventName: string; args: Record<string, unknown> };
-      if (decoded.eventName !== "BorrowLocked" && decoded.eventName !== "WithdrawLocked") continue;
-      const loggedIntentId = asHexString(String(decoded.args.intentId));
-      if (!loggedIntentId || loggedIntentId.toLowerCase() !== intentId.toLowerCase()) continue;
-      const amount = asBigInt(decoded.args.amount);
-      if (amount !== undefined) return amount;
-    } catch {
-      continue;
-    }
+async function cancelExpiredLockBestEffort(intentId: Hex): Promise<Hex | undefined> {
+  const existing = await fetchLockState(intentId).catch(() => undefined);
+  if (!existing || existing.status !== 1) return undefined;
+
+  try {
+    const cancelTx = await hubWallet.writeContract({
+      abi: HubLockManagerAbi,
+      address: lockManagerAddress,
+      functionName: "cancelExpiredLock",
+      args: [intentId],
+      account: relayerAccount
+    });
+    await hubPublic.waitForTransactionReceipt({ hash: cancelTx });
+    return cancelTx;
+  } catch (error) {
+    console.warn(`Failed to cancel expired lock ${intentId}`, error);
+    throw error;
   }
-  return undefined;
 }
 
-async function previewHubLockAmount(outputChainId: bigint, hubAsset: Address, outputAmount: bigint): Promise<bigint> {
-  const { hubDecimals, spokeDecimals } = await resolveRouteDecimals(outputChainId, hubAsset);
-  return scaleAmountUnits(outputAmount, spokeDecimals, hubDecimals);
+async function previewHubLock(intent: Intent): Promise<LockPreview> {
+  const preview = await hubPublic.readContract({
+    abi: HubLockManagerAbi,
+    address: lockManagerAddress,
+    functionName: "previewLock",
+    args: [intent]
+  });
+
+  const asset = asAddress(
+    (preview as { asset?: unknown }).asset
+    ?? (Array.isArray(preview) ? preview[0] : undefined)
+  );
+  const hubAmount = asBigInt(
+    (preview as { hubAmount?: unknown }).hubAmount
+    ?? (Array.isArray(preview) ? preview[1] : undefined)
+  );
+  const maxExpiry = asBigInt(
+    (preview as { maxExpiry?: unknown }).maxExpiry
+    ?? (Array.isArray(preview) ? preview[2] : undefined)
+  );
+  if (!asset || hubAmount === undefined || maxExpiry === undefined) {
+    throw new Error("unable to decode lock preview");
+  }
+  return { asset, hubAmount, maxExpiry };
 }
 
 async function resolveTokenRegistryAddress(): Promise<Address> {
@@ -1899,8 +2065,6 @@ async function resolveBorrowDispatchQuote(params: {
       const outputAmount = parseAcrossOutputAmount(payload, params.amount);
       const quoteTimestamp = Number(payload.quoteTimestamp ?? payload.timestamp ?? 0);
       const fillDeadline = Number(payload.fillDeadline ?? 0);
-      const exclusivityDeadline = Number(payload.exclusivityDeadline ?? 0);
-      const exclusiveRelayer = asAddress(String(payload.exclusiveRelayer ?? ZERO_ADDRESS)) ?? (ZERO_ADDRESS as Address);
       const isAmountTooLow = payload.isAmountTooLow === true;
 
       if (outputAmount === undefined) {
@@ -1923,16 +2087,11 @@ async function resolveBorrowDispatchQuote(params: {
       if (!Number.isInteger(fillDeadline) || fillDeadline <= quoteTimestamp) {
         throw new Error("Across quote missing/invalid fillDeadline");
       }
-      if (!Number.isInteger(exclusivityDeadline) || exclusivityDeadline < 0 || exclusivityDeadline > fillDeadline) {
-        throw new Error("Across quote invalid exclusivityDeadline");
-      }
 
       return {
         outputAmount,
         quoteTimestamp,
-        fillDeadline,
-        exclusivityDeadline,
-        exclusiveRelayer
+        fillDeadline
       };
     } catch (error) {
       const wrapped = new Error(`Across quote resolution failed: ${(error as Error).message}`);
@@ -2019,10 +2178,43 @@ function isTerminalBorrowFinalizationError(message: string): boolean {
   );
 }
 
+function isTerminalLockUnwindError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("invalidintenttype") || normalized.includes("invalidlockexpiryhint");
+}
+
+function shouldDropLockUnwindTask(status: string): boolean {
+  return (
+    status === "filled"
+    || status === "awaiting_settlement"
+    || status === "settled"
+    || status === "failed"
+    || status === "expired_unwound"
+  );
+}
+
 function computeRetryDelayMs(attempts: number): number {
   const exp = Math.max(0, attempts - 1);
   const delay = finalizationRetryBaseDelayMs * (2 ** Math.min(exp, 10));
   return Math.min(finalizationRetryMaxDelayMs, delay);
+}
+
+function computeLockExpiryHint(fillDeadline: number): bigint {
+  if (!Number.isInteger(fillDeadline) || fillDeadline <= 0) {
+    throw new Error("Across quote fillDeadline is invalid");
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const hint = BigInt(fillDeadline + lockUnwindGraceSeconds);
+  if (hint <= BigInt(nowSec)) {
+    throw new Error(`computed lock expiry hint is in the past (hint=${hint.toString()} now=${nowSec})`);
+  }
+  return hint;
+}
+
+function bigintTimestampToMs(value: bigint): number {
+  const ms = Number(value) * 1000;
+  if (!Number.isFinite(ms) || ms <= 0) return Date.now();
+  return ms;
 }
 
 function isUnknownBlockReadError(error: unknown): boolean {
@@ -2039,9 +2231,7 @@ function defaultAcrossQuote(amount: bigint): AcrossQuoteParams {
   return {
     outputAmount: amount,
     quoteTimestamp: now,
-    fillDeadline: now + 2 * 60 * 60,
-    exclusivityDeadline: 0,
-    exclusiveRelayer: ZERO_ADDRESS as Address
+    fillDeadline: now + 2 * 60 * 60
   };
 }
 
@@ -2347,6 +2537,16 @@ type BorrowFillFinalizationTaskPayload = {
   spokeFinalizedToBlock: string;
 };
 
+type LockUnwindTaskPayload = {
+  intentId: Hex;
+  lockAmount: string;
+  lockExpiry: string;
+  fillDeadline: string;
+  hubAsset: Address;
+  lockTx: Hex;
+  dispatchTx: Hex;
+};
+
 function toDepositWitnessWire(witness: DepositWitness): DepositWitnessWire {
   return {
     sourceChainId: witness.sourceChainId.toString(),
@@ -2551,6 +2751,9 @@ function validateStartupConfig() {
   }
   if (!Number.isInteger(finalizationMaxAttempts) || finalizationMaxAttempts <= 0) {
     throw new Error("RELAYER_FINALIZATION_MAX_ATTEMPTS must be a positive integer");
+  }
+  if (!Number.isInteger(lockUnwindGraceSeconds) || lockUnwindGraceSeconds <= 0) {
+    throw new Error("RELAYER_LOCK_UNWIND_GRACE_SECONDS must be a positive integer");
   }
   if (!acrossReceiverAddress) {
     throw new Error("Missing HUB_ACROSS_RECEIVER_ADDRESS");

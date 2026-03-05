@@ -1,4 +1,4 @@
-export type FinalizationTaskKind = "deposit_finalization" | "borrow_fill_finalization";
+export type FinalizationTaskKind = "deposit_finalization" | "borrow_fill_finalization" | "lock_unwind";
 export type FinalizationTask = {
     id: string;
     kind: FinalizationTaskKind;

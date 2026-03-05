@@ -9,6 +9,17 @@ import { useDeployments } from "../lib/runtime-config";
 const RELAYER_API = process.env.NEXT_PUBLIC_RELAYER_API_URL ?? "http://127.0.0.1:3040";
 const INDEXER_API = process.env.NEXT_PUBLIC_INDEXER_API_URL ?? "http://127.0.0.1:3030";
 
+function formatIntentStatus(status: string): string {
+  if (status === "pending_lock") return "Pending lock on hub...";
+  if (status === "locked") return "Locked and dispatched. Waiting for spoke fill...";
+  if (status === "filled") return "Fill observed. Finalizing proof...";
+  if (status === "awaiting_settlement") return "Proof finalized. Awaiting settlement batch...";
+  if (status === "settled") return "Settled on hub.";
+  if (status === "expired_unwound") return "Fill window expired and lock was automatically unwound.";
+  if (status === "failed") return "Intent failed.";
+  return `Current status: ${status}`;
+}
+
 export function BorrowWithdrawForm({ mode }: { mode: "borrow" | "withdraw" }) {
   const { address, chainId } = useAccount();
   const { signTypedDataAsync } = useSignTypedData();
@@ -82,7 +93,7 @@ export function BorrowWithdrawForm({ mode }: { mode: "borrow" | "withdraw" }) {
       return;
     }
 
-    setStatus("Filled. Awaiting settlement...");
+    setStatus("Locked and dispatched. Waiting for fill...");
   }
 
   async function refreshStatus() {
@@ -93,7 +104,7 @@ export function BorrowWithdrawForm({ mode }: { mode: "borrow" | "withdraw" }) {
       return;
     }
     const data = (await res.json()) as { status: string };
-    setStatus(`Current status: ${data.status}`);
+    setStatus(formatIntentStatus(data.status));
   }
 
   if (!address) return <p className="muted">Connect wallet first.</p>;

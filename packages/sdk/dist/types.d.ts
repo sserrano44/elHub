@@ -17,7 +17,7 @@ export type Intent = {
     nonce: bigint;
     deadline: bigint;
 };
-export type IntentStatus = "initiated" | "pending_lock" | "locked" | "filled" | "awaiting_settlement" | "settled" | "failed";
+export type IntentStatus = "initiated" | "pending_lock" | "locked" | "filled" | "awaiting_settlement" | "expired_unwound" | "settled" | "failed";
 export type IntentLifecycle = {
     intentId: `0x${string}`;
     status: IntentStatus;

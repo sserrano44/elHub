@@ -25,6 +25,7 @@ export type IntentStatus =
   | "locked"
   | "filled"
   | "awaiting_settlement"
+  | "expired_unwound"
   | "settled"
   | "failed";
 

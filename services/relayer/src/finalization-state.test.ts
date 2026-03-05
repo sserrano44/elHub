@@ -44,6 +44,15 @@ test("saveRelayerState round-trips task queue and cursors", () => {
         createdAt: now,
         updatedAt: now,
         lastError: "rpc timeout"
+      },
+      "lock-unwind:0xdef": {
+        id: "lock-unwind:0xdef",
+        kind: "lock_unwind",
+        payload: { intentId: "0xdef", lockExpiry: "123" },
+        attempts: 1,
+        nextAttemptAt: now + 2_000,
+        createdAt: now,
+        updatedAt: now
       }
     }
   };
@@ -53,9 +62,10 @@ test("saveRelayerState round-trips task queue and cursors", () => {
 
   assert.equal(loaded.lastSpokeBlock, 123n);
   assert.equal(loaded.lastHubBlock, 456n);
-  assert.equal(Object.keys(loaded.tasks).length, 1);
+  assert.equal(Object.keys(loaded.tasks).length, 2);
   assert.equal(loaded.tasks["deposit:0xabc"]?.kind, "deposit_finalization");
   assert.equal(loaded.tasks["deposit:0xabc"]?.attempts, 2);
+  assert.equal(loaded.tasks["lock-unwind:0xdef"]?.kind, "lock_unwind");
 });
 
 test("loadRelayerState migrates legacy cursor-only tracking format", () => {

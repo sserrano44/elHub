@@ -60,13 +60,19 @@ function runSharedStoreContract(name, createStore) {
             metadata: { phase: "init" }
         });
         store.upsertIntent(baseIntent);
+        const unwound = store.updateIntentStatus(baseIntent.intentId, "expired_unwound", {
+            metadata: { unwindTx: "0xaaaa" }
+        });
+        assert.ok(unwound);
+        assert.equal(unwound.status, "expired_unwound");
+        assert.equal(unwound.metadata?.unwindTx, "0xaaaa");
         const patched = store.updateIntentStatus(baseIntent.intentId, "settled", {
             metadata: { batchId: "7" },
             txHash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         });
         assert.ok(patched);
         assert.equal(patched.status, "settled");
-        assert.deepEqual(patched.metadata, { phase: "init", batchId: "7" });
+        assert.deepEqual(patched.metadata, { phase: "init", unwindTx: "0xaaaa", batchId: "7" });
         const filtered = store.listIntents("0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD");
         assert.equal(filtered.length, 1);
         assert.equal(filtered[0]?.intentId, baseIntent.intentId);

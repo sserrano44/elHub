@@ -63,7 +63,7 @@ if (internalAuthPreviousSecret.length > 0) {
 }
 const intentSchema = z.object({
     intentId: z.string().startsWith("0x"),
-    status: z.enum(["initiated", "pending_lock", "locked", "filled", "awaiting_settlement", "settled", "failed"]),
+    status: z.enum(["initiated", "pending_lock", "locked", "filled", "awaiting_settlement", "expired_unwound", "settled", "failed"]),
     user: z.string().startsWith("0x"),
     intentType: z.number().int(),
     amount: z.string(),
@@ -72,7 +72,7 @@ const intentSchema = z.object({
     metadata: z.record(z.unknown()).optional()
 });
 const statusPatchSchema = z.object({
-    status: z.enum(["initiated", "pending_lock", "locked", "filled", "awaiting_settlement", "settled", "failed"]),
+    status: z.enum(["initiated", "pending_lock", "locked", "filled", "awaiting_settlement", "expired_unwound", "settled", "failed"]),
     txHash: z.string().startsWith("0x").optional(),
     metadata: z.record(z.unknown()).optional()
 });
