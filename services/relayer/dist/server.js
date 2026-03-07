@@ -15,6 +15,7 @@ var IntentType;
     IntentType[IntentType["WITHDRAW"] = 4] = "WITHDRAW";
 })(IntentType || (IntentType = {}));
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ZERO_HASH = `0x${"0".repeat(64)}`;
 const NETWORKS = {
     ethereum: { envPrefix: "ETHEREUM", defaultChainId: 1 },
     base: { envPrefix: "BASE", defaultChainId: 8453 },
@@ -24,6 +25,7 @@ const NETWORKS = {
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
 const isLiveMode = (process.env.LIVE_MODE ?? "0") !== "0";
+const allowTenderlyRpc = (process.env.ALLOW_TENDERLY_RPC ?? process.env.E2E_ALLOW_TENDERLY_RPC ?? "0") !== "0";
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN ?? "*";
 const internalAuthSecret = process.env.INTERNAL_API_AUTH_SECRET
     ?? (isProduction ? "" : "dev-internal-auth-secret");
@@ -64,6 +66,7 @@ const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID
 const lockManagerAddress = process.env.HUB_LOCK_MANAGER_ADDRESS;
 const custodyAddress = process.env.HUB_CUSTODY_ADDRESS;
 const acrossReceiverAddress = process.env.HUB_ACROSS_RECEIVER_ADDRESS;
+const hubAcrossSpokePoolAddress = process.env.HUB_ACROSS_SPOKE_POOL_ADDRESS;
 const acrossBorrowDispatcherAddress = process.env.HUB_ACROSS_BORROW_DISPATCHER_ADDRESS;
 const acrossBorrowFinalizerAddress = process.env.HUB_ACROSS_BORROW_FINALIZER_ADDRESS;
 const spokeAcrossSpokePoolAddress = resolveSpokeAddress(spokeConfig.envPrefix, "ACROSS_SPOKE_POOL_ADDRESS");
@@ -91,6 +94,7 @@ const spokeToHub = JSON.parse(process.env.SPOKE_TO_HUB_TOKEN_MAP ?? "{}");
 if (!lockManagerAddress
     || !custodyAddress
     || !acrossReceiverAddress
+    || !hubAcrossSpokePoolAddress
     || !acrossBorrowDispatcherAddress
     || !acrossBorrowFinalizerAddress
     || !spokeAcrossSpokePoolAddress
@@ -122,7 +126,9 @@ const acrossReceiverAbi = parseAbi([
     "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
 const acrossBorrowDispatcherAbi = parseAbi([
-    "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset,(uint256 outputAmount,uint32 quoteTimestamp,uint32 fillDeadline) quote) returns (bytes32)"
+    "function dispatchBorrowFill(bytes32 intentId,uint8 intentType,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset,(uint256 outputAmount,uint32 quoteTimestamp,uint32 fillDeadline) quote) returns (bytes32)",
+    "function routeKey(address hubAsset,uint256 destinationChainId) view returns (bytes32)",
+    "function routes(bytes32 key) view returns (address spokePool,address spokeToken,address spokeReceiver,uint32 fillDeadlineBuffer,uint32 maxQuoteAge,bool enabled)"
 ]);
 const acrossBorrowFinalizerAbi = parseAbi([
     "function finalizeBorrowFill(bytes proof,(uint256 sourceChainId,bytes32 intentId,uint8 intentType,address user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
@@ -224,6 +230,13 @@ app.post("/intent/submit", async (req, res) => {
         if (!hubAsset) {
             throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
         }
+        await assertBorrowDispatchRoute({
+            hubAsset,
+            outputChainId: intent.outputChainId,
+            expectedSpokeToken: intent.outputToken,
+            expectedSpokeReceiver: spokeBorrowReceiverAddress,
+            expectedSpokePool: hubAcrossSpokePoolAddress
+        });
         const preview = await previewHubLock(intent);
         if (preview.asset.toLowerCase() !== hubAsset.toLowerCase()) {
             throw new Error(`preview lock asset mismatch for ${intentId}: expected=${hubAsset} got=${preview.asset}`);
@@ -255,16 +268,15 @@ app.post("/intent/submit", async (req, res) => {
             account: relayerAccount
         });
         const lockReceipt = await hubPublic.waitForTransactionReceipt({ hash: lockTx });
-        const lockState = await fetchLockState(intentId, lockReceipt.blockNumber).catch(async (error) => {
-            if (!isUnknownBlockReadError(error))
-                throw error;
-            return fetchLockState(intentId);
+        const fallbackLockExpiry = expiryHint < preview.maxExpiry ? expiryHint : preview.maxExpiry;
+        const lockState = await resolveLockStateOrPreview({
+            intentId,
+            receiptBlockNumber: lockReceipt.blockNumber,
+            previewAmount: preview.hubAmount,
+            fallbackExpiry: fallbackLockExpiry
         });
         const lockAmount = lockState.amount;
         const lockExpiry = lockState.expiry;
-        if (lockAmount <= 0n) {
-            throw new Error(`lock amount must be > 0 for intent ${intentId}`);
-        }
         const relayerHubBalance = await hubPublic.readContract({
             abi: erc20Abi,
             address: hubAsset,
@@ -574,6 +586,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
     const amount = asBigInt(log.args.amount);
     const fee = asBigInt(log.args.fee);
     const relayer = log.args.relayer;
+    const sourceChainId = asBigInt(log.args.sourceChainId);
     const destinationChainId = asBigInt(log.args.destinationChainId);
     const hubDispatcher = log.args.hubDispatcher;
     const hubFinalizer = log.args.hubFinalizer;
@@ -590,6 +603,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         || amount === undefined
         || fee === undefined
         || !relayer
+        || sourceChainId === undefined
         || destinationChainId === undefined
         || !hubDispatcher
         || !hubFinalizer
@@ -606,8 +620,12 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         console.warn(`Skipping outbound fill ${intentId} due to invalid fee`);
         return;
     }
-    if (destinationChainId !== spokeChainId) {
-        console.warn(`Skipping outbound fill ${intentId} due to chain mismatch`);
+    if (sourceChainId !== spokeChainId) {
+        console.warn(`Skipping outbound fill ${intentId} due to source chain mismatch`);
+        return;
+    }
+    if (destinationChainId !== hubChainId) {
+        console.warn(`Skipping outbound fill ${intentId} due to destination chain mismatch`);
         return;
     }
     if (hubDispatcher.toLowerCase() !== acrossBorrowDispatcherAddress.toLowerCase()) {
@@ -619,7 +637,7 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         return;
     }
     const existing = await fetchIntent(intentId);
-    if (existing?.status === "settled" || existing?.status === "awaiting_settlement") {
+    if (existing && shouldDropLockUnwindTask(existing.status)) {
         delete relayerState.tasks[lockUnwindTaskId(intentId)];
         return;
     }
@@ -662,8 +680,16 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         console.warn(`Skipping outbound fill ${intentId} because converted amount exceeds lock`);
         return;
     }
+    const lockExpiry = lockState?.expiry
+        ?? metadataBigInt(existing?.metadata, "lockExpiry")
+        ?? (() => {
+            const fillDeadline = metadataBigInt(existing?.metadata, "fillDeadline");
+            if (fillDeadline === undefined)
+                return undefined;
+            return fillDeadline + BigInt(lockUnwindGraceSeconds);
+        })();
     const witness = {
-        sourceChainId: spokeChainId,
+        sourceChainId,
         intentId,
         intentType,
         user,
@@ -683,7 +709,6 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         sourceReceiptsRoot,
         sourceReceiver: spokeBorrowReceiverAddress
     };
-    delete relayerState.tasks[lockUnwindTaskId(intentId)];
     enqueueBorrowFillFinalizationTask({
         intentId,
         outboundKind,
@@ -697,7 +722,8 @@ async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
         sourceTxHash,
         sourceLogIndex,
         spokeObservedBlock,
-        spokeFinalizedToBlock: finalizedToBlock
+        spokeFinalizedToBlock: finalizedToBlock,
+        lockExpiry
     });
 }
 async function pollHubDeposits() {
@@ -779,6 +805,50 @@ function borrowFillFinalizationTaskId(witness) {
 function lockUnwindTaskId(intentId) {
     return `lock-unwind:${intentId.toLowerCase()}`;
 }
+async function dropBorrowFinalizationTaskIfExpired(task, nowMs) {
+    const payload = task.payload;
+    const lockExpiry = borrowFinalizationLockExpiry(payload);
+    if (lockExpiry === undefined)
+        return false;
+    const nowSec = BigInt(Math.floor(nowMs / 1000));
+    if (nowSec < lockExpiry)
+        return false;
+    const unwindId = lockUnwindTaskId(payload.intentId);
+    const currentIntent = await fetchIntent(payload.intentId).catch(() => undefined);
+    if (currentIntent && shouldDropLockUnwindTask(currentIntent.status)) {
+        delete relayerState.tasks[unwindId];
+        delete relayerState.tasks[task.id];
+        return true;
+    }
+    const existingUnwind = relayerState.tasks[unwindId];
+    if (!existingUnwind || existingUnwind.terminal) {
+        const fallbackFillDeadline = lockExpiry > BigInt(lockUnwindGraceSeconds)
+            ? lockExpiry - BigInt(lockUnwindGraceSeconds)
+            : lockExpiry;
+        const lockAmount = asBigInt(payload.hubAmount) ?? 0n;
+        enqueueLockUnwindTask({
+            intentId: payload.intentId,
+            lockAmount,
+            lockExpiry,
+            fillDeadline: fallbackFillDeadline,
+            hubAsset: payload.hubAsset,
+            lockTx: ZERO_HASH,
+            dispatchTx: ZERO_HASH
+        });
+    }
+    else {
+        existingUnwind.nextAttemptAt = Math.min(existingUnwind.nextAttemptAt, nowMs);
+        existingUnwind.updatedAt = nowMs;
+    }
+    await updateIntentStatus(payload.intentId, "locked", {
+        finalizationStage: "lock_expired_unwind_pending",
+        lockExpiry: lockExpiry.toString()
+    }).catch((statusError) => {
+        console.warn(`Failed to persist lock-expired unwind metadata ${payload.intentId}`, statusError);
+    });
+    delete relayerState.tasks[task.id];
+    return true;
+}
 function enqueueDepositFinalizationTask(input) {
     const id = depositFinalizationTaskId(input.pendingId);
     const now = Date.now();
@@ -825,7 +895,8 @@ function enqueueBorrowFillFinalizationTask(input) {
         sourceTxHash: input.sourceTxHash,
         sourceLogIndex: input.sourceLogIndex.toString(),
         spokeObservedBlock: input.spokeObservedBlock.toString(),
-        spokeFinalizedToBlock: input.spokeFinalizedToBlock.toString()
+        spokeFinalizedToBlock: input.spokeFinalizedToBlock.toString(),
+        ...(input.lockExpiry !== undefined ? { lockExpiry: input.lockExpiry.toString() } : {})
     };
     relayerState.tasks[id] = {
         id,
@@ -885,6 +956,9 @@ async function processFinalizationTask(task) {
     const now = Date.now();
     task.attempts += 1;
     task.updatedAt = now;
+    if (task.kind === "borrow_fill_finalization" && await dropBorrowFinalizationTaskIfExpired(task, now)) {
+        return;
+    }
     try {
         if (task.kind === "deposit_finalization") {
             await runDepositFinalizationTask(task);
@@ -903,12 +977,24 @@ async function processFinalizationTask(task) {
     }
     catch (error) {
         const message = error.message;
-        const terminalFailure = task.kind === "deposit_finalization"
+        const lockExpiry = task.kind === "borrow_fill_finalization"
+            ? borrowFinalizationLockExpiry(task.payload)
+            : undefined;
+        const nowSec = BigInt(Math.floor(now / 1000));
+        const beforeExpiry = lockExpiry !== undefined ? nowSec < lockExpiry : false;
+        let terminalFailure = task.kind === "deposit_finalization"
             ? isTerminalDepositFinalizationError(message)
             : task.kind === "borrow_fill_finalization"
                 ? isTerminalBorrowFinalizationError(message)
                 : isTerminalLockUnwindError(message);
-        if (terminalFailure || task.attempts >= finalizationMaxAttempts) {
+        let exhaustedAttempts = task.attempts >= finalizationMaxAttempts;
+        if (task.kind === "borrow_fill_finalization" && beforeExpiry) {
+            exhaustedAttempts = false;
+            if (isBorrowProofOrVerifierFailure(message)) {
+                terminalFailure = false;
+            }
+        }
+        if (terminalFailure || exhaustedAttempts) {
             task.terminal = true;
             task.terminalReason = terminalFailure ? "terminal_contract_failure" : "max_attempts_exhausted";
             task.lastError = message;
@@ -962,6 +1048,19 @@ async function processFinalizationTask(task) {
                     console.warn(`Failed to persist retry deposit status ${payload.depositId}`, statusError);
                 });
             }
+            else if (task.kind === "borrow_fill_finalization") {
+                const payload = task.payload;
+                const expiry = borrowFinalizationLockExpiry(payload);
+                await updateIntentStatus(payload.intentId, "locked", {
+                    finalizationStage: "borrow_fill_retry",
+                    finalizationRetryCount: task.attempts,
+                    finalizationLastError: message,
+                    finalizationNextRetryAt: new Date(task.nextAttemptAt).toISOString(),
+                    ...(expiry !== undefined ? { lockExpiry: expiry.toString() } : {})
+                }).catch((statusError) => {
+                    console.warn(`Failed to persist borrow retry metadata ${payload.intentId}`, statusError);
+                });
+            }
         }
     }
     finally {
@@ -993,7 +1092,6 @@ async function runDepositFinalizationTask(task) {
 }
 async function runBorrowFillFinalizationTask(task) {
     const payload = task.payload;
-    delete relayerState.tasks[lockUnwindTaskId(payload.intentId)];
     const witness = fromBorrowFillWitnessWire(payload.witness);
     const sourceEvidence = fromSourceBorrowFillEvidenceWire(payload.sourceEvidence);
     let finalizeTx;
@@ -1026,6 +1124,7 @@ async function runBorrowFillFinalizationTask(task) {
         spokeBorrowFillTx: payload.sourceTxHash,
         borrowFillFinalizeTx: finalizeTx
     });
+    delete relayerState.tasks[lockUnwindTaskId(payload.intentId)];
     delete relayerState.tasks[task.id];
 }
 async function runLockUnwindTask(task) {
@@ -1423,6 +1522,29 @@ async function fetchLockState(intentId, blockNumber) {
     }
     throw new Error(`unable to read lock state for ${intentId}`);
 }
+async function resolveLockStateOrPreview({ intentId, receiptBlockNumber, previewAmount, fallbackExpiry }) {
+    if (previewAmount <= 0n) {
+        throw new Error(`lock amount must be > 0 for intent ${intentId}`);
+    }
+    try {
+        const lockState = await fetchLockState(intentId, receiptBlockNumber).catch(async (error) => {
+            if (!isUnknownBlockReadError(error))
+                throw error;
+            return fetchLockState(intentId);
+        });
+        if (lockState.amount > 0n) {
+            return lockState;
+        }
+    }
+    catch (error) {
+        console.warn(`Failed to read lock state for ${intentId}, using preview fallback`, error);
+    }
+    return {
+        amount: previewAmount,
+        expiry: fallbackExpiry,
+        status: 1
+    };
+}
 async function cancelLockBestEffort(intentId) {
     try {
         const cancelTx = await hubWallet.writeContract({
@@ -1477,6 +1599,43 @@ async function previewHubLock(intent) {
         throw new Error("unable to decode lock preview");
     }
     return { asset, hubAmount, maxExpiry };
+}
+async function assertBorrowDispatchRoute(params) {
+    const key = await hubPublic.readContract({
+        abi: acrossBorrowDispatcherAbi,
+        address: acrossBorrowDispatcherAddress,
+        functionName: "routeKey",
+        args: [params.hubAsset, params.outputChainId]
+    });
+    const route = await hubPublic.readContract({
+        abi: acrossBorrowDispatcherAbi,
+        address: acrossBorrowDispatcherAddress,
+        functionName: "routes",
+        args: [key]
+    });
+    const routeSpokePool = route.spokePool ?? (Array.isArray(route) ? route[0] : undefined);
+    const routeSpokeToken = route.spokeToken ?? (Array.isArray(route) ? route[1] : undefined);
+    const routeSpokeReceiver = route.spokeReceiver ?? (Array.isArray(route) ? route[2] : undefined);
+    const spokePool = asAddress(typeof routeSpokePool === "string" ? routeSpokePool : undefined);
+    const spokeToken = asAddress(typeof routeSpokeToken === "string" ? routeSpokeToken : undefined);
+    const spokeReceiver = asAddress(typeof routeSpokeReceiver === "string" ? routeSpokeReceiver : undefined);
+    const enabled = Boolean(route.enabled
+        ?? (Array.isArray(route) ? route[5] : false));
+    if (!enabled) {
+        throw new Error(`Dispatcher route disabled token=${params.hubAsset} chain=${params.outputChainId.toString()}`);
+    }
+    if (!spokePool || !spokeToken || !spokeReceiver) {
+        throw new Error(`Dispatcher route incomplete token=${params.hubAsset} chain=${params.outputChainId.toString()}`);
+    }
+    if (spokeToken.toLowerCase() !== params.expectedSpokeToken.toLowerCase()) {
+        throw new Error(`Dispatcher route spokeToken mismatch token=${params.hubAsset} chain=${params.outputChainId.toString()} expected=${params.expectedSpokeToken} got=${spokeToken}`);
+    }
+    if (spokeReceiver.toLowerCase() !== params.expectedSpokeReceiver.toLowerCase()) {
+        throw new Error(`Dispatcher route spokeReceiver mismatch token=${params.hubAsset} chain=${params.outputChainId.toString()} expected=${params.expectedSpokeReceiver} got=${spokeReceiver}`);
+    }
+    if (params.expectedSpokePool && spokePool.toLowerCase() !== params.expectedSpokePool.toLowerCase()) {
+        throw new Error(`Dispatcher route spokePool mismatch token=${params.hubAsset} chain=${params.outputChainId.toString()} expected=${params.expectedSpokePool} got=${spokePool}`);
+    }
 }
 async function resolveTokenRegistryAddress() {
     if (cachedTokenRegistryAddress)
@@ -1786,13 +1945,33 @@ function isTerminalBorrowFinalizationError(message) {
         || normalized.includes("locknotactive")
         || normalized.includes("pendingalreadyswept"));
 }
+function borrowFinalizationLockExpiry(payload) {
+    if (!payload.lockExpiry)
+        return undefined;
+    try {
+        const parsed = BigInt(payload.lockExpiry);
+        return parsed > 0n ? parsed : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function isBorrowProofOrVerifierFailure(message) {
+    const normalized = message.toLowerCase();
+    return (normalized.includes("invalidborrowfillproof")
+        || normalized.includes("prover response missing outbound fill proof")
+        || normalized.includes("/internal/borrow-fill-proof")
+        || normalized.includes("external light client")
+        || normalized.includes("borrowfillrecorded")
+        || normalized.includes("event verifier")
+        || (normalized.includes("borrow") && normalized.includes("proof")));
+}
 function isTerminalLockUnwindError(message) {
     const normalized = message.toLowerCase();
     return normalized.includes("invalidintenttype") || normalized.includes("invalidlockexpiryhint");
 }
 function shouldDropLockUnwindTask(status) {
-    return (status === "filled"
-        || status === "awaiting_settlement"
+    return (status === "awaiting_settlement"
         || status === "settled"
         || status === "failed"
         || status === "expired_unwound");
@@ -2138,7 +2317,7 @@ function resolveNetworkRpc(network, fallback) {
     const config = NETWORKS[network];
     const tenderly = process.env[`${config.envPrefix}_TENDERLY_RPC_URL`];
     const rpc = process.env[`${config.envPrefix}_RPC_URL`];
-    if (isLiveMode && tenderly) {
+    if (isLiveMode && !allowTenderlyRpc && tenderly) {
         throw new Error(`LIVE_MODE forbids ${config.envPrefix}_TENDERLY_RPC_URL`);
     }
     return rpc ?? tenderly ?? fallback;
@@ -2198,6 +2377,9 @@ function validateStartupConfig() {
     }
     if (!acrossBorrowDispatcherAddress) {
         throw new Error("Missing HUB_ACROSS_BORROW_DISPATCHER_ADDRESS");
+    }
+    if (!hubAcrossSpokePoolAddress) {
+        throw new Error("Missing HUB_ACROSS_SPOKE_POOL_ADDRESS");
     }
     if (!acrossBorrowFinalizerAddress) {
         throw new Error("Missing HUB_ACROSS_BORROW_FINALIZER_ADDRESS");

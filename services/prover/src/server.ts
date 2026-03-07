@@ -44,6 +44,7 @@ type NetworkName = keyof typeof NETWORKS;
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
 const isProduction = runtimeEnv === "production";
 const isLiveMode = (process.env.LIVE_MODE ?? "0") !== "0";
+const allowTenderlyRpc = (process.env.ALLOW_TENDERLY_RPC ?? process.env.E2E_ALLOW_TENDERLY_RPC ?? "0") !== "0";
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN ?? "*";
 const internalAuthSecret =
   process.env.INTERNAL_API_AUTH_SECRET
@@ -800,7 +801,7 @@ function resolveNetworkRpc(network: NetworkName, fallback: string): string {
   const config = NETWORKS[network];
   const tenderly = process.env[`${config.envPrefix}_TENDERLY_RPC_URL`];
   const rpc = process.env[`${config.envPrefix}_RPC_URL`];
-  if (isLiveMode && tenderly) {
+  if (isLiveMode && !allowTenderlyRpc && tenderly) {
     throw new Error(`LIVE_MODE forbids ${config.envPrefix}_TENDERLY_RPC_URL`);
   }
   return rpc ?? tenderly ?? fallback;
