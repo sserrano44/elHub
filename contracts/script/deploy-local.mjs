@@ -438,6 +438,7 @@ async function main() {
   const acrossBridgeAdapterAbi = loadArtifact("AcrossBridgeAdapter").abi;
   const depositProofBackendAbi = loadArtifact("AcrossDepositProofBackend").abi;
   const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
+  const hubAcrossBorrowFinalizerAbi = loadArtifact("HubAcrossBorrowFinalizer").abi;
   const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
   const spokeBorrowReceiverAbi = loadArtifact("SpokeAcrossBorrowReceiver").abi;
   const erc20Abi = loadArtifact("MockERC20").abi;
@@ -531,6 +532,20 @@ async function main() {
     functionName: "grantRole",
     args: [PROOF_FILL_ROLE, hubAcrossBorrowFinalizer]
   });
+  await write(hubWallet, hubPublic, {
+    address: hubAcrossBorrowFinalizer,
+    abi: hubAcrossBorrowFinalizerAbi,
+    functionName: "setVerifier",
+    args: [borrowFillProofVerifier]
+  });
+  const finalizerVerifierReadback = await read(hubPublic, {
+    address: hubAcrossBorrowFinalizer,
+    abi: hubAcrossBorrowFinalizerAbi,
+    functionName: "verifier"
+  });
+  if (String(finalizerVerifierReadback).toLowerCase() !== borrowFillProofVerifier.toLowerCase()) {
+    throw new Error(`Hub finalizer verifier mismatch: expected ${borrowFillProofVerifier} got ${finalizerVerifierReadback}`);
+  }
 
   await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setBridgeAdapter", args: [spokeBridgeAdapter] });
   await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setHubRecipient", args: [hubAcrossReceiver] });
@@ -578,12 +593,29 @@ async function main() {
     functionName: "setSourceReceiver",
     args: [BigInt(SPOKE_CHAIN_ID), spokeBorrowReceiver]
   });
+  const sourceReceiverReadback = await read(hubPublic, {
+    address: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "sourceReceiverByChain",
+    args: [BigInt(SPOKE_CHAIN_ID)]
+  });
+  if (String(sourceReceiverReadback).toLowerCase() !== spokeBorrowReceiver.toLowerCase()) {
+    throw new Error(`BorrowFillProofBackend sourceReceiverByChain mismatch: ${sourceReceiverReadback}`);
+  }
   await write(hubWallet, hubPublic, {
     address: borrowFillProofBackend,
     abi: borrowFillProofBackendAbi,
     functionName: "setDestinationDispatcher",
     args: [hubAcrossBorrowDispatcher]
   });
+  const destinationDispatcherReadback = await read(hubPublic, {
+    address: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "destinationDispatcher"
+  });
+  if (String(destinationDispatcherReadback).toLowerCase() !== hubAcrossBorrowDispatcher.toLowerCase()) {
+    throw new Error(`BorrowFillProofBackend destinationDispatcher mismatch: ${destinationDispatcherReadback}`);
+  }
   await write(hubWallet, hubPublic, {
     address: hubAcrossBorrowDispatcher,
     abi: hubAcrossBorrowDispatcherAbi,

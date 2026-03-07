@@ -1,7 +1,7 @@
 # elhub Technical Specification
 
 Version: `0.1.0`  
-Last updated: `2026-02-28`
+Last updated: `2026-03-07`
 
 ## 1. Purpose and Scope
 
@@ -294,21 +294,27 @@ Responsibilities:
 4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`:
    1. receiver authenticates source chain, hub dispatcher, and hub finalizer.
    2. receiver pays recipient and relayer fee.
-   2. receiver emits `BorrowFillRecorded`.
+   3. receiver emits `BorrowFillRecorded` with canonical proof-chain semantics (`sourceChainId = block.chainid`, `destinationChainId = expectedHubChainId`).
 5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
-6. Finalizer verifies proof and records fill evidence into settlement.
-7. Prover batches finalize action.
-8. Settlement consumes lock, updates hub accounting, reimburses relayer.
+6. Proof backends call external light-client/event verifiers with `try/catch`; external reverts are normalized to `false` and do not bubble.
+7. Finalizer verifies proof and records fill evidence into settlement.
+8. Prover batches finalize action.
+9. Settlement consumes lock, updates hub accounting, reimburses relayer.
+10. If finalization fails pre-expiry, relayer keeps retrying.
+11. At/after lock expiry, relayer prioritizes `cancelExpiredLock`; intent terminal status is `expired_unwound`.
 
 ### 6.3 Withdraw (Base accounting -> Worldchain payout via Across)
 1. User signs EIP-712 intent.
 2. Relayer calls `HubLockManager.lock`.
 3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
 4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` with the same source-chain/dispatcher/finalizer authentication checks.
-5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
-6. Finalizer verifies proof and records fill evidence in settlement.
-7. Prover batches finalize action.
-8. Settlement consumes lock, updates hub accounting, reimburses relayer.
+5. Receiver emits canonical proof-chain semantics in `BorrowFillRecorded` (`sourceChainId = block.chainid`, `destinationChainId = expectedHubChainId`).
+6. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
+7. Proof backends call external light-client/event verifiers with `try/catch`; external reverts are normalized to `false`.
+8. Finalizer verifies proof and records fill evidence in settlement.
+9. Prover batches finalize action.
+10. Settlement consumes lock, updates hub accounting, reimburses relayer.
+11. If finalization fails pre-expiry, relayer retries; at/after expiry, relayer cancels expired lock and marks `expired_unwound`.
 
 ### 6.4 Indexer intent statuses
 1. `initiated`
@@ -482,6 +488,15 @@ Outputs:
 4. `/Users/sebas/projects/hubris/contracts/deployments/live-<hub>-hub-<spokes>.json`
 5. `/Users/sebas/projects/hubris/contracts/deployments/live-<hub>-<spokes>.manifest.json`
 6. `/Users/sebas/projects/hubris/contracts/deployments/live_deployed_contracts.log`
+
+Live deployment policy:
+1. `deploy-live-multi.mjs` runs in fresh-deploy mode for the target slug and ignores prior manifest state during the run.
+2. Script enforces strict readback assertions before completion:
+   1. external verifier adapter targets,
+   2. finalizer verifier address,
+   3. borrow proof backend `destinationDispatcher` and `sourceReceiverByChain`,
+   4. spoke receiver expected dispatcher/finalizer/hub chain,
+   5. dispatcher route enabled + exact spoke pool/token/receiver mapping per token+chain.
 
 Verifier deployment modes:
 1. `HUB_VERIFIER_DEV_MODE=1`:

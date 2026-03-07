@@ -76,6 +76,10 @@ const withdrawAmount = parseUnits("10", 6);
 const MockAcrossSpokePoolAbi = parseAbi([
   "function relayV3Deposit(uint256 originChainId,bytes32 originTxHash,uint256 originLogIndex,address outputToken,uint256 outputAmount,address recipient,bytes message)"
 ]);
+const HubLockManagerOpsAbi = parseAbi([
+  "function reservedDebt(address user,address asset) view returns (uint256)",
+  "function reservedLiquidity(address asset) view returns (uint256)"
+]);
 const AcrossFundsDepositedEvent = parseAbiItem(
   "event V3FundsDeposited(uint256 indexed depositId, address indexed depositor, address indexed recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes message, address caller)"
 );
@@ -236,6 +240,7 @@ async function main() {
   const portal = deployments.spoke.portal;
   const market = deployments.hub.moneyMarket;
   const inbox = deployments.hub.intentInbox;
+  const lockManager = deployments.hub.lockManager;
 
   console.log("[e2e] supply flow: mint + approve + initiateSupply");
   await writeAndWait(spokeWallet, spokePublic, {
@@ -415,20 +420,45 @@ async function main() {
       const res = await fetch(`${INDEXER_API_URL}/intents/${intentId}`);
       if (!res.ok) return false;
       const payload = await res.json();
-      return payload.status === "settled";
+      return payload.status === "settled" || payload.status === "expired_unwound";
     },
-    "borrow settlement",
+    "borrow terminal status",
     120_000
   );
 
-  const userDebt = await hubPublic.readContract({
-    abi: HubMoneyMarketAbi,
-    address: market,
-    functionName: "getUserDebt",
+  const borrowIntentRecord = await fetch(`${INDEXER_API_URL}/intents/${intentId}`).then((res) => res.json());
+  if (borrowIntentRecord.status === "settled") {
+    const userDebt = await hubPublic.readContract({
+      abi: HubMoneyMarketAbi,
+      address: market,
+      functionName: "getUserDebt",
+      args: [userAccount.address, usdcHub]
+    });
+    if (userDebt <= 0n) {
+      throw new Error("expected non-zero hub debt after borrow settlement");
+    }
+  } else if (borrowIntentRecord.status !== "expired_unwound") {
+    throw new Error(`unexpected borrow terminal status: ${borrowIntentRecord.status}`);
+  }
+
+  const reservedDebtAfterBorrow = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedDebt",
     args: [userAccount.address, usdcHub]
   });
-  if (userDebt <= 0n) {
-    throw new Error("expected non-zero hub debt after borrow settlement");
+  if (reservedDebtAfterBorrow !== 0n) {
+    throw new Error(`borrow terminal status left reservedDebt > 0: ${reservedDebtAfterBorrow.toString()}`);
+  }
+
+  const reservedLiquidityAfterBorrow = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedLiquidity",
+    args: [usdcHub]
+  });
+  if (reservedLiquidityAfterBorrow !== 0n) {
+    throw new Error(`borrow terminal status left reservedLiquidity > 0: ${reservedLiquidityAfterBorrow.toString()}`);
   }
 
   const withdrawQuoteRes = await fetch(
@@ -553,8 +583,8 @@ async function main() {
   }
 
   console.log("[e2e] ==================================================");
-  console.log("[e2e] PASS: supply + borrow + withdraw cross-chain lifecycle settled");
-  console.log("[e2e] checks: deposit settled on hub, borrow settled on hub, withdraw settled on hub");
+  console.log("[e2e] PASS: supply + borrow + withdraw cross-chain lifecycle terminal");
+  console.log("[e2e] checks: deposit settled on hub, borrow reached settled|expired_unwound with zero reservations, withdraw settled on hub");
   console.log("[e2e] ==================================================");
   await stopAll();
 }

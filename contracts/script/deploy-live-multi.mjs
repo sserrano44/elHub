@@ -32,6 +32,7 @@ const NETWORK_CATALOG = {
 };
 
 const LIVE_MODE = (process.env.LIVE_MODE ?? "1") !== "0";
+const ALLOW_TENDERLY_RPC = (process.env.ALLOW_TENDERLY_RPC ?? process.env.E2E_ALLOW_TENDERLY_RPC ?? "0") !== "0";
 const HUB_NETWORK = normalizeNetwork(process.env.HUB_NETWORK ?? "base");
 const HUB_DEFAULTS = NETWORK_CATALOG[HUB_NETWORK];
 const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? process.env[`${HUB_DEFAULTS.envPrefix}_CHAIN_ID`] ?? HUB_DEFAULTS.chainId);
@@ -51,7 +52,7 @@ if (!Number.isInteger(HUB_CHAIN_ID) || HUB_CHAIN_ID <= 0) {
 if (SPOKE_NETWORKS.length === 0) {
   throw new Error("No spoke networks configured. Set SPOKE_NETWORKS, e.g. worldchain,bsc.");
 }
-if (LIVE_MODE && isTenderlyRpc(HUB_RPC_URL)) {
+if (LIVE_MODE && !ALLOW_TENDERLY_RPC && isTenderlyRpc(HUB_RPC_URL)) {
   throw new Error("LIVE_MODE forbids Tenderly RPC for hub");
 }
 
@@ -172,7 +173,7 @@ function normalizeNetwork(value) {
 function resolveRpcEnv(networkConfig) {
   const rpc = process.env[`${networkConfig.envPrefix}_RPC_URL`] ?? "";
   const tenderly = process.env[`${networkConfig.envPrefix}_TENDERLY_RPC_URL`] ?? "";
-  if (LIVE_MODE && tenderly) {
+  if (LIVE_MODE && !ALLOW_TENDERLY_RPC && tenderly) {
     throw new Error(`LIVE_MODE forbids ${networkConfig.envPrefix}_TENDERLY_RPC_URL`);
   }
   return rpc || tenderly;
@@ -187,7 +188,7 @@ function resolveSpokeConfig(network) {
   const rpcUrl = process.env[rpcKey] ?? "";
   const tenderly = process.env[`${defaults.envPrefix}_TENDERLY_RPC_URL`] ?? "";
 
-  if (LIVE_MODE && tenderly) {
+  if (LIVE_MODE && !ALLOW_TENDERLY_RPC && tenderly) {
     throw new Error(`LIVE_MODE forbids ${defaults.envPrefix}_TENDERLY_RPC_URL`);
   }
 
@@ -197,7 +198,7 @@ function resolveSpokeConfig(network) {
   if (!rpcUrl) {
     throw new Error(`Missing ${rpcKey}`);
   }
-  if (LIVE_MODE && isTenderlyRpc(rpcUrl)) {
+  if (LIVE_MODE && !ALLOW_TENDERLY_RPC && isTenderlyRpc(rpcUrl)) {
     throw new Error(`LIVE_MODE forbids Tenderly RPC for ${network}`);
   }
 
@@ -319,10 +320,13 @@ async function write(client, publicClient, { address, abi, functionName, args })
     }
 
     try {
-      await publicClient.waitForTransactionReceipt({
+      const receipt = await publicClient.waitForTransactionReceipt({
         hash,
         timeout: TX_RECEIPT_TIMEOUT_MS
       });
+      if (receipt.status !== "success") {
+        throw new Error(`[write:${functionName}] reverted tx=${hash}`);
+      }
       return hash;
     } catch (error) {
       lastError = error;
@@ -339,6 +343,84 @@ async function write(client, publicClient, { address, abi, functionName, args })
 
 async function read(publicClient, { address, abi, functionName, args = [] }) {
   return publicClient.readContract({ address, abi, functionName, args });
+}
+
+async function waitForAddressReadback({
+  publicClient,
+  targetAddress,
+  abi,
+  functionName,
+  args = [],
+  expected,
+  label,
+  attempts = 8,
+  delayMs = 1_000
+}) {
+  let lastObserved = ZERO_ADDRESS;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const observed = String(await read(publicClient, {
+      address: targetAddress,
+      abi,
+      functionName,
+      args
+    }));
+    if (sameAddress(observed, expected)) return observed;
+    lastObserved = observed;
+    if (attempt < attempts) {
+      await sleep(delayMs * attempt);
+    }
+  }
+  throw new Error(`${label} mismatch expected=${expected} got=${lastObserved}`);
+}
+
+function normalizeDispatcherRoute(route) {
+  return {
+    spokePool: String(route?.spokePool ?? (Array.isArray(route) ? route[0] : "")),
+    spokeToken: String(route?.spokeToken ?? (Array.isArray(route) ? route[1] : "")),
+    spokeReceiver: String(route?.spokeReceiver ?? (Array.isArray(route) ? route[2] : "")),
+    enabled: Boolean(route?.enabled ?? (Array.isArray(route) ? route[5] : false))
+  };
+}
+
+function dispatcherRouteMatches(observed, expected) {
+  return (
+    observed.spokePool.toLowerCase() === expected.spokePool.toLowerCase()
+    && observed.spokeToken.toLowerCase() === expected.spokeToken.toLowerCase()
+    && observed.spokeReceiver.toLowerCase() === expected.spokeReceiver.toLowerCase()
+    && observed.enabled === expected.enabled
+  );
+}
+
+async function waitForDispatcherRoute({
+  publicClient,
+  dispatcher,
+  dispatcherAbi,
+  key,
+  expected,
+  label,
+  attempts = 8,
+  delayMs = 1_000
+}) {
+  let lastObserved = normalizeDispatcherRoute({});
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const route = await read(publicClient, {
+      address: dispatcher,
+      abi: dispatcherAbi,
+      functionName: "routes",
+      args: [key]
+    });
+    const observed = normalizeDispatcherRoute(route);
+    if (dispatcherRouteMatches(observed, expected)) return observed;
+
+    lastObserved = observed;
+    if (attempt < attempts) {
+      await sleep(delayMs * attempt);
+    }
+  }
+
+  throw new Error(
+    `Dispatcher route mismatch ${label} expected(pool=${expected.spokePool}, token=${expected.spokeToken}, receiver=${expected.spokeReceiver}, enabled=${expected.enabled}) observed(pool=${lastObserved.spokePool}, token=${lastObserved.spokeToken}, receiver=${lastObserved.spokeReceiver}, enabled=${lastObserved.enabled})`
+  );
 }
 
 function isTenderlyRpc(url) {
@@ -521,7 +603,7 @@ async function ensureAccountBalance({
   const current = await publicClient.getBalance({ address });
   if (current >= minBalanceWei) return;
 
-  if (isTenderlyRpc(rpcUrl)) {
+  if (!ALLOW_TENDERLY_RPC && isTenderlyRpc(rpcUrl)) {
     throw new Error(`LIVE_MODE forbids Tenderly funding for ${label}`);
   }
 
@@ -549,15 +631,19 @@ const IMPLEMENTATION_SLOT =
 
 function readManifest(filePath) {
   if (!fs.existsSync(filePath)) {
-    return {
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      uups: {},
-      singletons: {},
-      metadata: {}
-    };
+    return createFreshManifest();
   }
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function createFreshManifest() {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    uups: {},
+    singletons: {},
+    metadata: {}
+  };
 }
 
 function writeManifest(filePath, manifest) {
@@ -899,7 +985,10 @@ async function main() {
 
   const slug = `${slugNetwork(HUB_NETWORK)}-${SPOKE_NETWORKS.map(slugNetwork).join("-")}`;
   const manifestPath = path.join(deploymentsDir, `live-${slug}.manifest.json`);
-  const manifest = readManifest(manifestPath);
+  if (fs.existsSync(manifestPath)) {
+    console.log(`[fresh-deploy] ignoring previous manifest state at ${path.relative(rootDir, manifestPath)}`);
+  }
+  const manifest = createFreshManifest();
   const actionRows = [];
 
   console.log(`Deploying/upgrading hub protocol on ${HUB_DEFAULTS.label}...`);
@@ -1134,6 +1223,37 @@ async function main() {
     args: [EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER]
   });
 
+  const configuredLightVerifier = await read(hubPublic, {
+    address: lightClientVerifierAdapter,
+    abi: externalLightAbi,
+    functionName: "verifier"
+  });
+  if (!sameAddress(configuredLightVerifier, EXTERNAL_LIGHT_CLIENT_VERIFIER)) {
+    throw new Error(
+      `External light-client verifier mismatch expected=${EXTERNAL_LIGHT_CLIENT_VERIFIER} got=${configuredLightVerifier}`
+    );
+  }
+  const configuredDepositVerifier = await read(hubPublic, {
+    address: acrossDepositEventVerifierAdapter,
+    abi: externalDepositAbi,
+    functionName: "verifier"
+  });
+  if (!sameAddress(configuredDepositVerifier, EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER)) {
+    throw new Error(
+      `External deposit-event verifier mismatch expected=${EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER} got=${configuredDepositVerifier}`
+    );
+  }
+  const configuredBorrowVerifier = await read(hubPublic, {
+    address: acrossBorrowFillEventVerifierAdapter,
+    abi: externalBorrowAbi,
+    functionName: "verifier"
+  });
+  if (!sameAddress(configuredBorrowVerifier, EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER)) {
+    throw new Error(
+      `External borrow-fill-event verifier mismatch expected=${EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER} got=${configuredBorrowVerifier}`
+    );
+  }
+
   const depositProofBackendDeployment = await deployOrUpgradeUUPS({
     key: `hub.depositProofBackend`,
     network: HUB_NETWORK,
@@ -1214,6 +1334,14 @@ async function main() {
   });
   const hubAcrossBorrowDispatcher = hubAcrossBorrowDispatcherDeployment.proxy;
 
+  // Fresh deploy policy: always pin finalizer verifier explicitly after deployments.
+  await write(hubWallet, hubPublic, {
+    address: hubAcrossBorrowFinalizer,
+    abi: loadArtifact("HubAcrossBorrowFinalizer").abi,
+    functionName: "setVerifier",
+    args: [borrowFillProofVerifier]
+  });
+
   const hubAcrossReceiverDeployment = await deployOrUpgradeUUPS({
     key: `hub.hubAcrossReceiver`,
     network: HUB_NETWORK,
@@ -1254,6 +1382,7 @@ async function main() {
   const acrossBridgeAdapterAbi = loadArtifact("AcrossBridgeAdapter").abi;
   const depositProofBackendAbi = loadArtifact("AcrossDepositProofBackend").abi;
   const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
+  const hubAcrossBorrowFinalizerAbi = loadArtifact("HubAcrossBorrowFinalizer").abi;
   const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
   const spokeBorrowReceiverAbi = loadArtifact("SpokeAcrossBorrowReceiver").abi;
   const chainlinkOracleAbi = loadArtifact("ChainlinkPriceOracle").abi;
@@ -1410,6 +1539,15 @@ async function main() {
       functionName: "setSourceReceiver",
       args: [BigInt(spoke.chainId), borrowReceiver]
     });
+    await waitForAddressReadback({
+      publicClient: hubPublic,
+      targetAddress: borrowFillProofBackend,
+      abi: borrowFillProofBackendAbi,
+      functionName: "sourceReceiverByChain",
+      args: [BigInt(spoke.chainId)],
+      expected: borrowReceiver,
+      label: `BorrowFillProofBackend sourceReceiverByChain spoke=${spoke.network} chain=${spoke.chainId}`
+    });
 
     spokeDeployments[spoke.network] = {
       network: spoke.network,
@@ -1434,6 +1572,23 @@ async function main() {
     abi: borrowFillProofBackendAbi,
     functionName: "setDestinationDispatcher",
     args: [hubAcrossBorrowDispatcher]
+  });
+  await waitForAddressReadback({
+    publicClient: hubPublic,
+    targetAddress: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "destinationDispatcher",
+    expected: hubAcrossBorrowDispatcher,
+    label: "BorrowFillProofBackend destinationDispatcher"
+  });
+
+  await waitForAddressReadback({
+    publicClient: hubPublic,
+    targetAddress: hubAcrossBorrowFinalizer,
+    abi: hubAcrossBorrowFinalizerAbi,
+    functionName: "verifier",
+    expected: borrowFillProofVerifier,
+    label: "HubAcrossBorrowFinalizer verifier"
   });
 
   console.log("Configuring hub registry/risk/markets + routes...");
@@ -1602,28 +1757,19 @@ async function main() {
         functionName: "routeKey",
         args: [hubTokens[token.symbol], BigInt(spoke.chainId)]
       });
-      const route = await read(hubPublic, {
-        address: hubAcrossBorrowDispatcher,
-        abi: hubAcrossBorrowDispatcherAbi,
-        functionName: "routes",
-        args: [key]
+      await waitForDispatcherRoute({
+        publicClient: hubPublic,
+        dispatcher: hubAcrossBorrowDispatcher,
+        dispatcherAbi: hubAcrossBorrowDispatcherAbi,
+        key,
+        expected: {
+          spokePool: hubAcrossSpokePool,
+          spokeToken: spokeTokenMap[spoke.network][token.symbol],
+          spokeReceiver: spokeDeployments[spoke.network].borrowReceiver,
+          enabled: true
+        },
+        label: `token=${token.symbol} spoke=${spoke.network}`
       });
-      const spokePool = String(route?.spokePool ?? (Array.isArray(route) ? route[0] : ""));
-      const spokeToken = String(route?.spokeToken ?? (Array.isArray(route) ? route[1] : ""));
-      const spokeReceiver = String(route?.spokeReceiver ?? (Array.isArray(route) ? route[2] : ""));
-      const enabled = Boolean(route?.enabled ?? (Array.isArray(route) ? route[5] : false));
-      if (spokePool.toLowerCase() !== hubAcrossSpokePool.toLowerCase()) {
-        throw new Error(`Dispatcher route spokePool mismatch token=${token.symbol} spoke=${spoke.network}`);
-      }
-      if (spokeToken.toLowerCase() !== spokeTokenMap[spoke.network][token.symbol].toLowerCase()) {
-        throw new Error(`Dispatcher route spokeToken mismatch token=${token.symbol} spoke=${spoke.network}`);
-      }
-      if (spokeReceiver.toLowerCase() !== spokeDeployments[spoke.network].borrowReceiver.toLowerCase()) {
-        throw new Error(`Dispatcher route spokeReceiver mismatch token=${token.symbol} spoke=${spoke.network}`);
-      }
-      if (!enabled) {
-        throw new Error(`Dispatcher route disabled token=${token.symbol} spoke=${spoke.network}`);
-      }
     }
   }
 

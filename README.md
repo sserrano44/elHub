@@ -101,23 +101,23 @@ pnpm dev
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
 3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only if spoke pool sender plus hub dispatcher/finalizer and source/destination chain bindings match expected values.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only if spoke pool sender plus hub dispatcher/finalizer and source/destination chain bindings match expected values (`sourceChainId = spoke chain`, `destinationChainId = hub chain`).
 5. Relayer/prover submit borrow fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer records proof-verified borrow fill evidence in settlement.
 7. Prover batches finalize actions and settles.
 8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
-9. If fill does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
+9. Borrow-fill finalization retries until lock expiry; if fill/finalization does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
 
 ### Withdraw
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
 3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill` with `intentType=WITHDRAW`.
-4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only after origin/auth checks pass.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded` only after origin/auth checks pass (`sourceChainId = spoke chain`, `destinationChainId = hub chain`).
 5. Relayer/prover submit withdraw fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
 6. Finalizer records proof-verified withdraw fill evidence in settlement.
 7. Prover batches finalize actions and settles.
 8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
-9. If fill does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
+9. Withdraw-fill finalization retries until lock expiry; if fill/finalization does not complete before lock expiry (`fillDeadline + 30m`, capped by lock TTL/intent deadline), relayer auto-calls `cancelExpiredLock` and status becomes `expired_unwound`.
 
 ## Testing
 
@@ -256,7 +256,7 @@ Notes:
 1. `scripts/e2e-live-base-world-bsc.mjs` hard-fails if any configured RPC URL is Tenderly in `LIVE_MODE=1`.
 2. The live runner never calls relay simulation paths (`simulateAcrossRelay` / `MockAcrossSpokePool.relayV3Deposit`).
 3. Deployment artifacts are written under `contracts/deployments/live-*.{json,env}` for local reuse; do not commit the generated `live-*.env`.
-4. UUPS deployment state is tracked in `contracts/deployments/live-base-world-bsc.manifest.json` and action logs in `contracts/deployments/live_deployed_contracts.log`.
+4. Live deploy runs are fresh-deploy oriented: `contracts/script/deploy-live-multi.mjs` ignores prior manifest state for the target and rewrites `contracts/deployments/live-*.manifest.json` for that run. Action logs are appended to `contracts/deployments/live_deployed_contracts.log`.
 
 ### E2E command set
 
@@ -265,6 +265,16 @@ Active E2E commands:
 2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
 3. `pnpm test:e2e:live:base-world-bsc` (Base hub + Worldchain/BSC live scenario on real RPCs)
 4. `pnpm test:e2e` (runs both local/fork active E2E commands)
+
+### Borrow proof-path diagnostics
+
+Use the diagnostics utility to pinpoint the first failing borrow-proof stage (`revert` vs `false`) with a relayer borrow-finalization payload:
+
+```bash
+node scripts/debug-borrow-proof-path.mjs \
+  --deployment contracts/deployments/live-base-hub-worldchain-bsc.json \
+  --payload /path/to/borrow-fill-task-or-payload.json
+```
 
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`

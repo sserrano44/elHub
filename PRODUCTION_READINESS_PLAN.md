@@ -13,6 +13,16 @@ Production-ready means all items below are true:
 5. Contracts and services have completed external security review and critical findings are resolved.
 6. CI/CD and runbooks support repeatable testnet and mainnet release with rollback procedures.
 
+## V2 Runtime Policy (Main Branch)
+
+The current V2 runtime policy is:
+1. Strict external verifier posture on live-like runs (`HUB_VERIFIER_DEV_MODE=0` with external light-client and event verifiers configured).
+2. Borrow-fill finalization retries until lock expiry; no pre-expiry terminalization for proof/verifier-class failures.
+3. Outbound lock lifecycle is expiry-authoritative; post-expiry unwind uses `cancelExpiredLock` and terminal status `expired_unwound`.
+4. Fresh deploy operational mode for live deployments:
+   - do not rely on prior manifest state,
+   - enforce strict post-deploy readback assertions for verifier/backend/receiver/route wiring before considering deploy successful.
+
 ---
 
 ## Phase 0 (Blockers)

@@ -34,6 +34,7 @@ const NETWORKS = {
 };
 
 const LIVE_MODE = "1";
+const ALLOW_TENDERLY_RPC = (process.env.E2E_ALLOW_TENDERLY_RPC ?? process.env.ALLOW_TENDERLY_RPC ?? "0") !== "0";
 const HUB_NETWORK = "base";
 const WORLD_NETWORK = "worldchain";
 const BSC_NETWORK = "bsc";
@@ -76,6 +77,7 @@ const deployer = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 const relayer = privateKeyToAccount(RELAYER_PRIVATE_KEY);
 const user1 = privateKeyToAccount(USER1_PRIVATE_KEY);
 const user2 = privateKeyToAccount(USER2_PRIVATE_KEY);
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const user1UsdcSupplyUnits = process.env.E2E_USER1_USDC_SUPPLY ?? "10";
 const user2WethSupplyUnits = process.env.E2E_USER2_WETH_SUPPLY ?? "0.0005";
@@ -85,8 +87,8 @@ const maxUser2WethSupplyUnits = process.env.E2E_MAX_USER2_WETH ?? "0.002";
 const maxUser2BorrowUsdcUnits = process.env.E2E_MAX_USER2_BORROW_USDC ?? "5";
 const relayerHubUsdcTopupUnits = process.env.E2E_RELAYER_HUB_USDC_TOPUP ?? "2";
 const maxRelayerHubUsdcTopupUnits = process.env.E2E_MAX_RELAYER_HUB_USDC_TOPUP ?? "5";
-const staleLockScanBlocks = BigInt(process.env.E2E_STALE_LOCK_SCAN_BLOCKS ?? "100000");
 const minHubDeployerEth = process.env.E2E_MIN_HUB_DEPLOYER_ETH ?? "0.001";
+const minHubFinalizerEth = process.env.E2E_MIN_HUB_FINALIZER_ETH ?? "0.003";
 const minWorldUserEth = process.env.E2E_MIN_WORLD_USER_ETH ?? "0.01";
 
 const intentTypes = {
@@ -131,6 +133,7 @@ const AcrossSpokePoolAbi = parseAbi([
 ]);
 const HubLockManagerOpsAbi = parseAbi([
   "function reservedDebt(address user,address asset) view returns (uint256)",
+  "function reservedLiquidity(address asset) view returns (uint256)",
   "function locks(bytes32 intentId) view returns (bytes32 intentId,address user,uint8 intentType,address asset,uint256 amount,address relayer,uint256 lockTimestamp,uint256 expiry,uint8 status)",
   "function cancelLock(bytes32 intentId)"
 ]);
@@ -151,7 +154,7 @@ async function main() {
   assertWorkspaceLinks();
   assertRequiredLiveVerifiers();
 
-  if (isTenderlyRpc(HUB_RPC_URL) || isTenderlyRpc(WORLD_RPC_URL) || isTenderlyRpc(BSC_RPC_URL)) {
+  if (!ALLOW_TENDERLY_RPC && (isTenderlyRpc(HUB_RPC_URL) || isTenderlyRpc(WORLD_RPC_URL) || isTenderlyRpc(BSC_RPC_URL))) {
     throw new Error("LIVE_MODE run forbids Tenderly RPC URLs");
   }
 
@@ -190,6 +193,8 @@ async function main() {
         LIVE_MODE,
         HUB_NETWORK,
         SPOKE_NETWORKS,
+        HUB_CHAIN_ID: String(HUB_CHAIN_ID),
+        HUB_RPC_URL,
         BASE_CHAIN_ID: String(HUB_CHAIN_ID),
         WORLDCHAIN_CHAIN_ID: String(WORLD_CHAIN_ID),
         BSC_CHAIN_ID: String(BSC_CHAIN_ID),
@@ -201,12 +206,14 @@ async function main() {
         RELAYER_PRIVATE_KEY,
         BRIDGE_PRIVATE_KEY,
         PROVER_PRIVATE_KEY,
+        ALLOW_TENDERLY_RPC: ALLOW_TENDERLY_RPC ? "1" : "0",
+        E2E_ALLOW_TENDERLY_RPC: ALLOW_TENDERLY_RPC ? "1" : "0",
         HUB_GROTH16_VERIFIER_ADDRESS,
         HUB_LIGHT_CLIENT_VERIFIER_ADDRESS,
         HUB_ACROSS_DEPOSIT_EVENT_VERIFIER_ADDRESS,
         HUB_ACROSS_BORROW_FILL_EVENT_VERIFIER_ADDRESS,
         DEPLOY_MIN_DEPLOYER_GAS_ETH: process.env.DEPLOY_MIN_DEPLOYER_GAS_ETH ?? "0.003",
-        DEPLOY_MIN_OPERATOR_GAS_ETH: process.env.DEPLOY_MIN_OPERATOR_GAS_ETH ?? "0.003",
+        DEPLOY_MIN_OPERATOR_GAS_ETH: process.env.DEPLOY_MIN_OPERATOR_GAS_ETH ?? "0.002",
         HUB_VERIFIER_DEV_MODE: "0"
       }
     });
@@ -274,6 +281,8 @@ async function main() {
     INDEXER_PORT: String(INDEXER_PORT),
     RELAYER_PORT: String(RELAYER_PORT),
     PROVER_PORT: String(PROVER_PORT),
+    ALLOW_TENDERLY_RPC: ALLOW_TENDERLY_RPC ? "1" : "0",
+    E2E_ALLOW_TENDERLY_RPC: ALLOW_TENDERLY_RPC ? "1" : "0",
     INDEXER_API_URL,
     PROVER_API_URL,
     CORS_ALLOW_ORIGIN: process.env.CORS_ALLOW_ORIGIN ?? "https://localhost",
@@ -451,15 +460,6 @@ async function main() {
     evidence.relayerLiquidityAcrossDepositId = relayerTopup.acrossDepositId;
   }
 
-  await clearStaleBorrowLocks({
-    hubPublic,
-    hubWallet: hubDeployerWallet,
-    lockManager: deployments.hub.lockManager,
-    user: user2.address,
-    asset: usdcHub,
-    scanBlocks: staleLockScanBlocks
-  });
-
   await stopChildren([stage.relayer, stage.prover]);
 
   console.log("[e2e-live] stage bsc: starting prover + relayer");
@@ -480,6 +480,12 @@ async function main() {
     functionName: "balanceOf",
     args: [user2.address]
   });
+  await ensureNativeBalance(
+    hubPublic,
+    deployer.address,
+    parseEther(minHubFinalizerEth),
+    "hub deployer (pre-borrow finalization)"
+  );
   const borrowLogFromBlock = await bscPublic.getBlockNumber();
 
   console.log(`[e2e-live] USER2 borrow ${user2BorrowUsdcUnits} USDC to BSC`);
@@ -605,18 +611,28 @@ async function main() {
     if (user2BscUsdcAfter - user2BscUsdcBefore < expectedNet) {
       throw new Error("expected USER2 BSC USDC balance increase from borrow fill");
     }
-  } else if (borrowIntentRecord.status === "expired_unwound") {
-    const reservedDebtAfter = await hubPublic.readContract({
-      abi: HubLockManagerOpsAbi,
-      address: lockManager,
-      functionName: "reservedDebt",
-      args: [user2.address, usdcHub]
-    });
-    if (reservedDebtAfter !== 0n) {
-      throw new Error(`expired_unwound intent still has reserved debt: ${reservedDebtAfter.toString()}`);
-    }
-  } else {
+  } else if (borrowIntentRecord.status !== "expired_unwound") {
     throw new Error(`unexpected borrow terminal status: ${borrowIntentRecord.status}`);
+  }
+
+  const reservedDebtAfter = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedDebt",
+    args: [user2.address, usdcHub]
+  });
+  if (reservedDebtAfter !== 0n) {
+    throw new Error(`borrow terminal status left reservedDebt > 0: ${reservedDebtAfter.toString()}`);
+  }
+
+  const reservedLiquidityAfter = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedLiquidity",
+    args: [usdcHub]
+  });
+  if (reservedLiquidityAfter !== 0n) {
+    throw new Error(`borrow terminal status left reservedLiquidity > 0: ${reservedLiquidityAfter.toString()}`);
   }
 
   await stopChildren([stage.relayer, stage.prover]);
@@ -624,7 +640,7 @@ async function main() {
   console.log("[e2e-live] ==================================================");
   console.log("[e2e-live] PASS: Base hub live scenario (World supplies + BSC borrow)");
   console.log(
-    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrow reached terminal status=${evidence.user2BorrowFinalStatus}`
+    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrow reached terminal status=${evidence.user2BorrowFinalStatus}, reserved debt/liquidity are zero`
   );
   console.log("[e2e-live] evidence:", JSON.stringify(evidence, null, 2));
   console.log("[e2e-live] ==================================================");
@@ -901,12 +917,7 @@ async function ensureRelayerHubLiquidityViaAcross({
 }
 
 async function clearStaleBorrowLocks({ hubPublic, hubWallet, lockManager, user, asset, scanBlocks }) {
-  const reservedBefore = await hubPublic.readContract({
-    abi: HubLockManagerOpsAbi,
-    address: lockManager,
-    functionName: "reservedDebt",
-    args: [user, asset]
-  });
+  const reservedBefore = await readReservedDebt({ hubPublic, lockManager, user, asset });
   if (reservedBefore === 0n) return;
 
   console.log(`[e2e-live] clearing stale borrow locks (reservedDebt=${reservedBefore.toString()})`);
@@ -924,11 +935,14 @@ async function clearStaleBorrowLocks({ hubPublic, hubWallet, lockManager, user, 
     seen
   });
 
-  let reservedAfter = await hubPublic.readContract({
-    abi: HubLockManagerOpsAbi,
-    address: lockManager,
-    functionName: "reservedDebt",
-    args: [user, asset]
+  let reservedAfter = await waitForReservedDebtAtMost({
+    hubPublic,
+    lockManager,
+    user,
+    asset,
+    maxValue: 0n,
+    attempts: 6,
+    delayMs: 1_000
   });
 
   if (reservedAfter > 0n && latest > scanBlocks) {
@@ -943,11 +957,14 @@ async function clearStaleBorrowLocks({ hubPublic, hubWallet, lockManager, user, 
       toBlock: latest,
       seen
     });
-    reservedAfter = await hubPublic.readContract({
-      abi: HubLockManagerOpsAbi,
-      address: lockManager,
-      functionName: "reservedDebt",
-      args: [user, asset]
+    reservedAfter = await waitForReservedDebtAtMost({
+      hubPublic,
+      lockManager,
+      user,
+      asset,
+      maxValue: 0n,
+      attempts: 8,
+      delayMs: 1_500
     });
   }
 
@@ -960,6 +977,27 @@ async function clearStaleBorrowLocks({ hubPublic, hubWallet, lockManager, user, 
   if (cancelled > 0) {
     console.log(`[e2e-live] cancelled ${cancelled} stale borrow lock(s)`);
   }
+}
+
+async function readReservedDebt({ hubPublic, lockManager, user, asset }) {
+  return hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedDebt",
+    args: [user, asset]
+  });
+}
+
+async function waitForReservedDebtAtMost({ hubPublic, lockManager, user, asset, maxValue, attempts, delayMs }) {
+  let current = await readReservedDebt({ hubPublic, lockManager, user, asset });
+  for (let i = 0; i < attempts; i += 1) {
+    if (current <= maxValue) return current;
+    if (i + 1 < attempts) {
+      await sleep(delayMs * (i + 1));
+      current = await readReservedDebt({ hubPublic, lockManager, user, asset });
+    }
+  }
+  return current;
 }
 
 async function cancelActiveLocksInRange({
@@ -1117,7 +1155,9 @@ async function fetchAcrossSuggestedFee({ originChainId, destinationChainId, inpu
   return {
     outputAmount,
     quoteTimestamp,
-    fillDeadline
+    fillDeadline,
+    exclusivityDeadline: 0,
+    exclusiveRelayer: ZERO_ADDRESS
   };
 }
 
