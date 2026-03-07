@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {TestBase} from "./utils/TestBase.sol";
+import {TestBase, Vm} from "./utils/TestBase.sol";
 import {Constants} from "../src/libraries/Constants.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockAcrossSpokePool} from "../src/mocks/MockAcrossSpokePool.sol";
@@ -130,6 +130,61 @@ contract SpokeAcrossBorrowReceiverTest is TestBase {
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(SpokeAcrossBorrowReceiver.IntentAlreadyFilled.selector, intentId));
         spokePool.relayV3Deposit(8453, keccak256("origin"), 8, address(spokeUsdc), 25e6, address(receiver), message);
+    }
+
+    function test_emitsCanonicalProofChainSemantics() external {
+        bytes32 intentId = keccak256("canonical-chains");
+        uint256 amount = 40e6;
+        uint256 fee = 2e6;
+        bytes memory message = _encodeMessage(intentId, Constants.INTENT_BORROW, amount, fee);
+
+        vm.recordLogs();
+        vm.prank(relayer);
+        spokePool.relayV3Deposit(8453, keccak256("origin"), 9, address(spokeUsdc), amount, address(receiver), message);
+
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 expectedSig = keccak256(
+            "BorrowFillRecorded(bytes32,uint8,address,address,address,address,uint256,uint256,address,uint256,uint256,address,address,bytes32)"
+        );
+        bool found;
+        for (uint256 i = 0; i < entries.length; ++i) {
+            Vm.Log memory entry = entries[i];
+            if (entry.emitter != address(receiver) || entry.topics.length != 4 || entry.topics[0] != expectedSig) {
+                continue;
+            }
+
+            (
+                address recipient,
+                address spokeToken,
+                address hubAsset,
+                uint256 loggedAmount,
+                uint256 loggedFee,
+                address loggedRelayer,
+                uint256 sourceChainId,
+                uint256 destinationChainId,
+                address loggedDispatcher,
+                address loggedFinalizer,
+                bytes32 loggedMessageHash
+            ) = abi.decode(entry.data, (address, address, address, uint256, uint256, address, uint256, uint256, address, address, bytes32));
+
+            assertEq(entry.topics[1], intentId, "intent id topic mismatch");
+            assertEq(uint256(entry.topics[2]), uint256(Constants.INTENT_BORROW), "intent type topic mismatch");
+            assertEq(address(uint160(uint256(entry.topics[3]))), user, "user topic mismatch");
+            assertEq(recipient, user, "recipient mismatch");
+            assertEq(spokeToken, address(spokeUsdc), "spoke token mismatch");
+            assertEq(hubAsset, address(spokeUsdc), "hub asset mismatch");
+            assertEq(loggedAmount, amount, "amount mismatch");
+            assertEq(loggedFee, fee, "fee mismatch");
+            assertEq(loggedRelayer, relayer, "relayer mismatch");
+            assertEq(sourceChainId, block.chainid, "source chain should be spoke chain");
+            assertEq(destinationChainId, HUB_CHAIN_ID, "destination chain should be hub chain");
+            assertEq(loggedDispatcher, hubDispatcher, "dispatcher mismatch");
+            assertEq(loggedFinalizer, hubFinalizer, "finalizer mismatch");
+            assertEq(loggedMessageHash, keccak256(message), "message hash mismatch");
+            found = true;
+            break;
+        }
+        assertTrue(found, "BorrowFillRecorded log not found");
     }
 
     function _encodeMessage(bytes32 intentId, uint8 intentType, uint256 amount, uint256 fee)

@@ -5,10 +5,33 @@ import {TestBase} from "./utils/TestBase.sol";
 import {Constants} from "../src/libraries/Constants.sol";
 import {IBorrowFillProofVerifier} from "../src/interfaces/IBorrowFillProofVerifier.sol";
 import {IAcrossBorrowFillProofBackend} from "../src/interfaces/IAcrossBorrowFillProofBackend.sol";
+import {IAcrossBorrowFillEventVerifier} from "../src/interfaces/IAcrossBorrowFillEventVerifier.sol";
+import {ILightClientVerifier} from "../src/interfaces/ILightClientVerifier.sol";
 import {BorrowFillProofVerifier} from "../src/zk/BorrowFillProofVerifier.sol";
 import {AcrossBorrowFillProofBackend} from "../src/zk/AcrossBorrowFillProofBackend.sol";
 import {MockLightClientVerifier} from "../src/mocks/MockLightClientVerifier.sol";
 import {MockAcrossBorrowFillEventVerifier} from "../src/mocks/MockAcrossBorrowFillEventVerifier.sol";
+
+contract RevertingLightClientVerifier is ILightClientVerifier {
+    function verifyFinalizedBlock(uint256, uint256, bytes32, bytes calldata) external pure returns (bool) {
+        revert("light-client-revert");
+    }
+}
+
+contract RevertingAcrossBorrowFillEventVerifier is IAcrossBorrowFillEventVerifier {
+    function verifyBorrowFillRecorded(
+        IBorrowFillProofVerifier.BorrowFillWitness calldata,
+        bytes32,
+        bytes32,
+        address,
+        uint256,
+        address,
+        address,
+        bytes calldata
+    ) external pure returns (bool) {
+        revert("event-verifier-revert");
+    }
+}
 
 contract BorrowFillProofVerifierTest is TestBase {
     uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
@@ -124,6 +147,56 @@ contract BorrowFillProofVerifierTest is TestBase {
         vm.prank(destinationFinalizer);
         bool ok = verifier.verifyBorrowFillProof(proof, witness);
         assertTrue(!ok, "hub dispatcher mismatch should fail verification");
+    }
+
+    function test_verifyBorrowFillProofReturnsFalseWhenLightClientVerifierReverts() external {
+        RevertingLightClientVerifier revertingLight = new RevertingLightClientVerifier();
+        AcrossBorrowFillProofBackend revertingBackend =
+            new AcrossBorrowFillProofBackend(address(this), revertingLight, eventVerifier);
+        revertingBackend.setSourceReceiver(SOURCE_CHAIN_ID, sourceReceiver);
+        revertingBackend.setDestinationDispatcher(destinationDispatcher);
+        BorrowFillProofVerifier revertingVerifier = new BorrowFillProofVerifier(revertingBackend);
+
+        IBorrowFillProofVerifier.BorrowFillWitness memory witness =
+            _witness(Constants.INTENT_BORROW, keccak256("reverting-light"));
+        bytes memory proof = _canonicalProof(
+            witness,
+            sourceReceiver,
+            destinationDispatcher,
+            destinationFinalizer,
+            block.chainid,
+            keccak256("light-source-block"),
+            keccak256("light-receipts-root")
+        );
+
+        vm.prank(destinationFinalizer);
+        bool ok = revertingVerifier.verifyBorrowFillProof(proof, witness);
+        assertTrue(!ok, "reverting light client verifier should fail safely");
+    }
+
+    function test_verifyBorrowFillProofReturnsFalseWhenEventVerifierReverts() external {
+        RevertingAcrossBorrowFillEventVerifier revertingEvent = new RevertingAcrossBorrowFillEventVerifier();
+        AcrossBorrowFillProofBackend revertingBackend =
+            new AcrossBorrowFillProofBackend(address(this), lightClientVerifier, revertingEvent);
+        revertingBackend.setSourceReceiver(SOURCE_CHAIN_ID, sourceReceiver);
+        revertingBackend.setDestinationDispatcher(destinationDispatcher);
+        BorrowFillProofVerifier revertingVerifier = new BorrowFillProofVerifier(revertingBackend);
+
+        IBorrowFillProofVerifier.BorrowFillWitness memory witness =
+            _witness(Constants.INTENT_BORROW, keccak256("reverting-event"));
+        bytes memory proof = _canonicalProof(
+            witness,
+            sourceReceiver,
+            destinationDispatcher,
+            destinationFinalizer,
+            block.chainid,
+            keccak256("event-source-block"),
+            keccak256("event-receipts-root")
+        );
+
+        vm.prank(destinationFinalizer);
+        bool ok = revertingVerifier.verifyBorrowFillProof(proof, witness);
+        assertTrue(!ok, "reverting event verifier should fail safely");
     }
 
     function _witness(uint8 intentType, bytes32 intentTag)

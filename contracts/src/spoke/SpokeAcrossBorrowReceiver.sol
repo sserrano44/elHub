@@ -214,8 +214,8 @@ contract SpokeAcrossBorrowReceiver is AccessControl, Initializable, UUPSUpgradea
             decoded.amount,
             decoded.fee,
             decoded.relayer,
-            decoded.sourceChainId,
-            decoded.destinationChainId,
+            block.chainid,
+            expectedHubChainId,
             decoded.hubDispatcher,
             decoded.hubFinalizer,
             keccak256(message)

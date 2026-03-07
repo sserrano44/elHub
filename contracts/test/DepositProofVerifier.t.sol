@@ -4,10 +4,38 @@ pragma solidity ^0.8.24;
 import {TestBase} from "./utils/TestBase.sol";
 import {IDepositProofVerifier} from "../src/interfaces/IDepositProofVerifier.sol";
 import {IAcrossDepositProofBackend} from "../src/interfaces/IAcrossDepositProofBackend.sol";
+import {IAcrossDepositEventVerifier} from "../src/interfaces/IAcrossDepositEventVerifier.sol";
+import {ILightClientVerifier} from "../src/interfaces/ILightClientVerifier.sol";
 import {DepositProofVerifier} from "../src/zk/DepositProofVerifier.sol";
 import {AcrossDepositProofBackend} from "../src/zk/AcrossDepositProofBackend.sol";
 import {MockLightClientVerifier} from "../src/mocks/MockLightClientVerifier.sol";
 import {MockAcrossDepositEventVerifier} from "../src/mocks/MockAcrossDepositEventVerifier.sol";
+
+contract RevertingDepositLightClientVerifier is ILightClientVerifier {
+    function verifyFinalizedBlock(uint256, uint256, bytes32, bytes calldata) external pure returns (bool) {
+        revert("light-client-revert");
+    }
+}
+
+contract RevertingAcrossDepositEventVerifier is IAcrossDepositEventVerifier {
+    function verifyV3FundsDeposited(
+        uint256,
+        bytes32,
+        bytes32,
+        bytes32,
+        uint256,
+        address,
+        address,
+        bytes32,
+        address,
+        uint256,
+        address,
+        uint256,
+        bytes calldata
+    ) external pure returns (bool) {
+        revert("event-verifier-revert");
+    }
+}
 
 contract DepositProofVerifierTest is TestBase {
     uint8 internal constant CANONICAL_PROOF_SCHEMA_VERSION = 1;
@@ -86,6 +114,64 @@ contract DepositProofVerifierTest is TestBase {
         vm.prank(destinationReceiver);
         bool ok = verifier.verifyDepositProof(proof, witness);
         assertTrue(!ok, "expected unsupported source chain to fail");
+    }
+
+    function test_verifyDepositProofReturnsFalseWhenLightClientVerifierReverts() external {
+        RevertingDepositLightClientVerifier revertingLight = new RevertingDepositLightClientVerifier();
+        AcrossDepositProofBackend revertingBackend =
+            new AcrossDepositProofBackend(address(this), revertingLight, eventVerifier);
+        revertingBackend.setSourceSpokePool(SOURCE_CHAIN_ID, sourceSpokePool);
+        DepositProofVerifier revertingVerifier = new DepositProofVerifier(revertingBackend);
+
+        IDepositProofVerifier.DepositWitness memory witness = IDepositProofVerifier.DepositWitness({
+            sourceChainId: SOURCE_CHAIN_ID,
+            depositId: 42,
+            intentType: 1,
+            user: vm.addr(0xDEAD),
+            spokeToken: vm.addr(0x1111),
+            hubAsset: vm.addr(0x2222),
+            amount: 1e6,
+            sourceTxHash: keccak256("src"),
+            sourceLogIndex: 3,
+            messageHash: keccak256("msg")
+        });
+
+        bytes memory proof = _canonicalProof(
+            witness, sourceSpokePool, destinationReceiver, block.chainid, 301, keccak256("b"), keccak256("r")
+        );
+
+        vm.prank(destinationReceiver);
+        bool ok = revertingVerifier.verifyDepositProof(proof, witness);
+        assertTrue(!ok, "reverting light client verifier should fail safely");
+    }
+
+    function test_verifyDepositProofReturnsFalseWhenEventVerifierReverts() external {
+        RevertingAcrossDepositEventVerifier revertingEvent = new RevertingAcrossDepositEventVerifier();
+        AcrossDepositProofBackend revertingBackend =
+            new AcrossDepositProofBackend(address(this), lightClientVerifier, revertingEvent);
+        revertingBackend.setSourceSpokePool(SOURCE_CHAIN_ID, sourceSpokePool);
+        DepositProofVerifier revertingVerifier = new DepositProofVerifier(revertingBackend);
+
+        IDepositProofVerifier.DepositWitness memory witness = IDepositProofVerifier.DepositWitness({
+            sourceChainId: SOURCE_CHAIN_ID,
+            depositId: 43,
+            intentType: 1,
+            user: vm.addr(0xBEEF),
+            spokeToken: vm.addr(0x3333),
+            hubAsset: vm.addr(0x4444),
+            amount: 2e6,
+            sourceTxHash: keccak256("src2"),
+            sourceLogIndex: 4,
+            messageHash: keccak256("msg2")
+        });
+
+        bytes memory proof = _canonicalProof(
+            witness, sourceSpokePool, destinationReceiver, block.chainid, 302, keccak256("b2"), keccak256("r2")
+        );
+
+        vm.prank(destinationReceiver);
+        bool ok = revertingVerifier.verifyDepositProof(proof, witness);
+        assertTrue(!ok, "reverting event verifier should fail safely");
     }
 
     function _canonicalProof(

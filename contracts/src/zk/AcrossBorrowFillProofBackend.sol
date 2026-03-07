@@ -72,15 +72,19 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
         if (expectedReceiver == address(0)) return false;
         if (proof.sourceReceiver != expectedReceiver) return false;
 
-        if (
-            !lightClientVerifier.verifyFinalizedBlock(
-                witness.sourceChainId, proof.sourceBlockNumber, proof.sourceBlockHash, proof.finalityProof
-            )
-        ) {
+        bool finalized;
+        try lightClientVerifier.verifyFinalizedBlock(
+            witness.sourceChainId, proof.sourceBlockNumber, proof.sourceBlockHash, proof.finalityProof
+        ) returns (bool ok) {
+            finalized = ok;
+        } catch {
+            return false;
+        }
+        if (!finalized) {
             return false;
         }
 
-        return eventVerifier.verifyBorrowFillRecorded(
+        try eventVerifier.verifyBorrowFillRecorded(
             witness,
             proof.sourceBlockHash,
             proof.receiptsRoot,
@@ -89,7 +93,11 @@ contract AcrossBorrowFillProofBackend is Ownable, Initializable, UUPSUpgradeable
             destinationDispatcher,
             destinationFinalizer,
             proof.inclusionProof
-        );
+        ) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 
     function _isSupportedIntentType(uint8 intentType) internal pure returns (bool) {

@@ -57,15 +57,19 @@ contract AcrossDepositProofBackend is Ownable, Initializable, UUPSUpgradeable, I
         if (expectedSourceSpokePool == address(0)) return false;
         if (proof.sourceSpokePool != expectedSourceSpokePool) return false;
 
-        if (
-            !lightClientVerifier.verifyFinalizedBlock(
-                witness.sourceChainId, proof.sourceBlockNumber, proof.sourceBlockHash, proof.finalityProof
-            )
-        ) {
+        bool finalized;
+        try lightClientVerifier.verifyFinalizedBlock(
+            witness.sourceChainId, proof.sourceBlockNumber, proof.sourceBlockHash, proof.finalityProof
+        ) returns (bool ok) {
+            finalized = ok;
+        } catch {
+            return false;
+        }
+        if (!finalized) {
             return false;
         }
 
-        return eventVerifier.verifyV3FundsDeposited(
+        try eventVerifier.verifyV3FundsDeposited(
             witness.sourceChainId,
             proof.sourceBlockHash,
             proof.receiptsRoot,
@@ -79,6 +83,10 @@ contract AcrossDepositProofBackend is Ownable, Initializable, UUPSUpgradeable, I
             witness.hubAsset,
             witness.amount,
             proof.inclusionProof
-        );
+        ) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 }
