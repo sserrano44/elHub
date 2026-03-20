@@ -12,6 +12,8 @@
     "test:e2e:base-hub-supply": "node ./scripts/e2e-base-hub-supply.mjs",
     "test:e2e:base-mainnet-supply": "node ./scripts/e2e-base-mainnet-supply.mjs",
     "test:e2e:live:base-world-bsc": "node ./scripts/e2e-live-base-world-bsc.mjs",
+    "recover:live:funds": "node ./scripts/recover-live-test-funds.mjs",
+    "recover:live:funds:execute": "node ./scripts/recover-live-test-funds.mjs --execute",
     "test:e2e": "pnpm test:e2e:base-hub-supply && pnpm test:e2e:fork",
     "format": "turbo run format",
     "contracts:test": "cd contracts && forge test -vvv",

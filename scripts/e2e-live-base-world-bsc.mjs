@@ -11,6 +11,7 @@ import {
   defineChain,
   encodeAbiParameters,
   formatEther,
+  formatUnits,
   http,
   keccak256,
   parseAbi,
@@ -82,14 +83,20 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const user1UsdcSupplyUnits = process.env.E2E_USER1_USDC_SUPPLY ?? "10";
 const user2WethSupplyUnits = process.env.E2E_USER2_WETH_SUPPLY ?? "0.0005";
 const user2BorrowUsdcUnits = process.env.E2E_USER2_BORROW_USDC ?? "1";
+const user2RepayBufferUsdcUnits = process.env.E2E_USER2_REPAY_BUFFER_USDC ?? "0.05";
+const user2RepayDebtDustUsdcUnits = process.env.E2E_USER2_REPAY_DEBT_DUST_USDC ?? "0.001";
+const user1WithdrawBps = Number(process.env.E2E_USER1_WITHDRAW_BPS ?? "9950");
+const user2WithdrawBps = Number(process.env.E2E_USER2_WITHDRAW_BPS ?? "9950");
 const maxUser1UsdcSupplyUnits = process.env.E2E_MAX_USER1_USDC ?? "20";
 const maxUser2WethSupplyUnits = process.env.E2E_MAX_USER2_WETH ?? "0.002";
 const maxUser2BorrowUsdcUnits = process.env.E2E_MAX_USER2_BORROW_USDC ?? "5";
+const maxUser2RepayBufferUsdcUnits = process.env.E2E_MAX_USER2_REPAY_BUFFER_USDC ?? "1";
 const relayerHubUsdcTopupUnits = process.env.E2E_RELAYER_HUB_USDC_TOPUP ?? "2";
 const maxRelayerHubUsdcTopupUnits = process.env.E2E_MAX_RELAYER_HUB_USDC_TOPUP ?? "5";
 const minHubDeployerEth = process.env.E2E_MIN_HUB_DEPLOYER_ETH ?? "0.001";
 const minHubFinalizerEth = process.env.E2E_MIN_HUB_FINALIZER_ETH ?? "0.003";
 const minWorldUserEth = process.env.E2E_MIN_WORLD_USER_ETH ?? "0.01";
+const minBscUserEth = process.env.E2E_MIN_BSC_USER_ETH ?? "0.001";
 
 const intentTypes = {
   Intent: [
@@ -140,6 +147,7 @@ const HubLockManagerOpsAbi = parseAbi([
 
 const children = [];
 let isStopping = false;
+let intentNonceCursor = BigInt(Date.now());
 
 main().catch(async (error) => {
   console.error("[e2e-live] failed:", error);
@@ -212,6 +220,7 @@ async function main() {
         HUB_LIGHT_CLIENT_VERIFIER_ADDRESS,
         HUB_ACROSS_DEPOSIT_EVENT_VERIFIER_ADDRESS,
         HUB_ACROSS_BORROW_FILL_EVENT_VERIFIER_ADDRESS,
+        LIVE_DEPLOY_STRATEGY: process.env.E2E_LIVE_DEPLOY_STRATEGY ?? process.env.LIVE_DEPLOY_STRATEGY ?? "incremental",
         DEPLOY_MIN_DEPLOYER_GAS_ETH: process.env.DEPLOY_MIN_DEPLOYER_GAS_ETH ?? "0.003",
         DEPLOY_MIN_OPERATOR_GAS_ETH: process.env.DEPLOY_MIN_OPERATOR_GAS_ETH ?? "0.002",
         HUB_VERIFIER_DEV_MODE: "0"
@@ -245,13 +254,53 @@ async function main() {
   const worldPublic = createPublicClient({ chain: worldChain, transport: http(deployments.spokes.worldchain.rpcUrl) });
   const bscPublic = createPublicClient({ chain: bscChain, transport: http(deployments.spokes.bsc.rpcUrl) });
 
-  const hubDeployerWallet = createWalletClient({ account: deployer, chain: hubChain, transport: http(deployments.hub.rpcUrl) });
-  const worldUser1Wallet = createWalletClient({ account: user1, chain: worldChain, transport: http(deployments.spokes.worldchain.rpcUrl) });
-  const worldUser2Wallet = createWalletClient({ account: user2, chain: worldChain, transport: http(deployments.spokes.worldchain.rpcUrl) });
+  const hubDeployerWallet = createWalletClient({
+    account: deployer,
+    chain: hubChain,
+    transport: http(deployments.hub.rpcUrl)
+  });
+  const worldDeployerWallet = createWalletClient({
+    account: deployer,
+    chain: worldChain,
+    transport: http(deployments.spokes.worldchain.rpcUrl)
+  });
+  const bscDeployerWallet = createWalletClient({
+    account: deployer,
+    chain: bscChain,
+    transport: http(deployments.spokes.bsc.rpcUrl)
+  });
+  const worldUser1Wallet = createWalletClient({
+    account: user1,
+    chain: worldChain,
+    transport: http(deployments.spokes.worldchain.rpcUrl)
+  });
+  const worldUser2Wallet = createWalletClient({
+    account: user2,
+    chain: worldChain,
+    transport: http(deployments.spokes.worldchain.rpcUrl)
+  });
+  const bscUser2Wallet = createWalletClient({
+    account: user2,
+    chain: bscChain,
+    transport: http(deployments.spokes.bsc.rpcUrl)
+  });
 
   await ensureNativeBalance(hubPublic, deployer.address, parseEther(minHubDeployerEth), "hub deployer");
-  await ensureNativeBalance(worldPublic, user1.address, parseEther(minWorldUserEth), "world user1");
-  await ensureNativeBalance(worldPublic, user2.address, parseEther(minWorldUserEth), "world user2");
+  await ensureNativeBalance(worldPublic, user1.address, parseEther(minWorldUserEth), "world user1", {
+    funderWalletClient: worldDeployerWallet,
+    funderPublicClient: worldPublic,
+    nativeSymbol: "ETH"
+  });
+  await ensureNativeBalance(worldPublic, user2.address, parseEther(minWorldUserEth), "world user2", {
+    funderWalletClient: worldDeployerWallet,
+    funderPublicClient: worldPublic,
+    nativeSymbol: "ETH"
+  });
+  await ensureNativeBalance(bscPublic, user2.address, parseEther(minBscUserEth), "bsc user2", {
+    funderWalletClient: bscDeployerWallet,
+    funderPublicClient: bscPublic,
+    nativeSymbol: "BNB"
+  });
 
   const SpokePortalAbi = readJson(path.join(rootDir, "packages", "abis", "src", "generated", "SpokePortal.json"));
   const HubMoneyMarketAbi = readJson(path.join(rootDir, "packages", "abis", "src", "generated", "HubMoneyMarket.json"));
@@ -321,6 +370,9 @@ async function main() {
   const usdcHub = deployments.tokens.USDC.hub;
   const wethHub = deployments.tokens.WETH.hub;
   const moneyMarket = deployments.hub.moneyMarket;
+  const lockManager = deployments.hub.lockManager;
+  const bscPortal = deployments.spokes.bsc.portal;
+  const bscAcrossSpokePool = deployments.spokes.bsc.acrossSpokePool;
 
   const worldUsdcDecimals = Number(
     await worldPublic.readContract({ abi: ERC20Abi, address: worldUsdc, functionName: "decimals" })
@@ -339,10 +391,14 @@ async function main() {
   const user1UsdcSupplyAmount = parseUnits(user1UsdcSupplyUnits, worldUsdcDecimals);
   const user2WethSupplyAmount = parseUnits(user2WethSupplyUnits, worldWethDecimals);
   const user2BorrowUsdcAmount = parseUnits(user2BorrowUsdcUnits, bscUsdcDecimals);
+  const user2RepayBufferHubAmount = parseUnits(user2RepayBufferUsdcUnits, hubUsdcDecimals);
+  const user2RepayDebtDustHubAmount = parseUnits(user2RepayDebtDustUsdcUnits, hubUsdcDecimals);
+  const user2RepayBufferBscAmount = scaleAmountUnits(user2RepayBufferHubAmount, hubUsdcDecimals, bscUsdcDecimals);
   const relayerHubUsdcTopupAmount = parseUnits(relayerHubUsdcTopupUnits, hubUsdcDecimals);
   const maxUser1UsdcSupply = parseUnits(maxUser1UsdcSupplyUnits, worldUsdcDecimals);
   const maxUser2WethSupply = parseUnits(maxUser2WethSupplyUnits, worldWethDecimals);
   const maxUser2BorrowUsdc = parseUnits(maxUser2BorrowUsdcUnits, bscUsdcDecimals);
+  const maxUser2RepayBufferHubAmount = parseUnits(maxUser2RepayBufferUsdcUnits, hubUsdcDecimals);
   const maxRelayerHubUsdcTopup = parseUnits(maxRelayerHubUsdcTopupUnits, hubUsdcDecimals);
   const requiredRelayerHubUsdc = scaleAmountUnits(user2BorrowUsdcAmount, bscUsdcDecimals, hubUsdcDecimals);
 
@@ -355,8 +411,46 @@ async function main() {
   if (user2BorrowUsdcAmount > maxUser2BorrowUsdc) {
     throw new Error("USER2 borrow exceeds configured max-notional guardrail");
   }
+  if (user2RepayBufferHubAmount > maxUser2RepayBufferHubAmount) {
+    throw new Error("USER2 repay buffer exceeds configured max-notional guardrail");
+  }
   if (relayerHubUsdcTopupAmount > maxRelayerHubUsdcTopup) {
     throw new Error("Relayer top-up exceeds configured max-notional guardrail");
+  }
+  if (!Number.isFinite(user1WithdrawBps) || user1WithdrawBps <= 0 || user1WithdrawBps > 10_000) {
+    throw new Error("E2E_USER1_WITHDRAW_BPS must be in range (0, 10000]");
+  }
+  if (!Number.isFinite(user2WithdrawBps) || user2WithdrawBps <= 0 || user2WithdrawBps > 10_000) {
+    throw new Error("E2E_USER2_WITHDRAW_BPS must be in range (0, 10000]");
+  }
+
+  await ensureTokenBalance({
+    publicClient: worldPublic,
+    walletAddress: user1.address,
+    tokenAddress: worldUsdc,
+    minBalance: user1UsdcSupplyAmount,
+    label: "USER1 world USDC supply",
+    tokenSymbol: "USDC",
+    tokenDecimals: worldUsdcDecimals,
+    erc20Abi: ERC20Abi,
+    funderWalletClient: worldDeployerWallet,
+    funderPublicClient: worldPublic
+  });
+
+  const user2WorldNativeBalance = await worldPublic.getBalance({ address: user2.address });
+  const user2WorldNativeRequired = parseEther(minWorldUserEth) + user2WethSupplyAmount;
+  if (user2WorldNativeBalance < user2WorldNativeRequired) {
+    await ensureNativeBalance(
+      worldPublic,
+      user2.address,
+      user2WorldNativeRequired,
+      "USER2 world native balance for WETH supply + gas reserve",
+      {
+        funderWalletClient: worldDeployerWallet,
+        funderPublicClient: worldPublic,
+        nativeSymbol: "ETH"
+      }
+    );
   }
 
   const evidence = {
@@ -367,12 +461,28 @@ async function main() {
     relayerLiquidityTopupTx: "",
     relayerLiquidityAcrossDepositId: "",
     user2BorrowDispatchTx: "",
-    user2BorrowAcrossDepositId: ""
+    user2BorrowAcrossDepositId: "",
+    user2BorrowFinalStatus: "",
+    user2BorrowFillTx: "",
+    user2BorrowFillAmount: "",
+    user2BorrowFillFee: "",
+    user2RepayTx: "",
+    user2RepayAcrossDepositId: "",
+    user2DebtBeforeRepay: "",
+    user2DebtAfterRepay: "",
+    user2RepayTopupTx: "",
+    user2RepayTopupAcrossDepositId: "",
+    user2RepayTopupAmount: "",
+    user1WithdrawDispatchTx: "",
+    user1WithdrawFinalStatus: "",
+    user2WithdrawDispatchTx: "",
+    user2WithdrawFinalStatus: ""
   };
 
   console.log(`[e2e-live] USER1 supply ${user1UsdcSupplyUnits} USDC from Worldchain`);
-  const user1SupplyResult = await runSupplyFromSpoke({
+  const user1SupplyResult = await runInboundFromSpoke({
     label: "USER1 USDC supply",
+    portalFunctionName: "initiateSupply",
     spokePublic: worldPublic,
     spokeWallet: worldUser1Wallet,
     portal: worldPortal,
@@ -401,8 +511,9 @@ async function main() {
     value: user2WethSupplyAmount
   });
 
-  const user2SupplyResult = await runSupplyFromSpoke({
+  const user2SupplyResult = await runInboundFromSpoke({
     label: "USER2 WETH supply",
+    portalFunctionName: "initiateSupply",
     spokePublic: worldPublic,
     spokeWallet: worldUser2Wallet,
     portal: worldPortal,
@@ -445,7 +556,11 @@ async function main() {
     hubPublic,
     sourcePublic: worldPublic,
     sourceWallet: worldUser1Wallet,
+    sourceFunderWallet: worldDeployerWallet,
+    sourceFunderPublic: worldPublic,
     sourceToken: worldUsdc,
+    sourceTokenDecimals: worldUsdcDecimals,
+    sourceTokenSymbol: "USDC",
     sourceAcrossSpokePool: worldAcrossSpokePool,
     destinationToken: usdcHub,
     sourceChainId: BigInt(deployments.spokes.worldchain.chainId),
@@ -489,66 +604,19 @@ async function main() {
   const borrowLogFromBlock = await bscPublic.getBlockNumber();
 
   console.log(`[e2e-live] USER2 borrow ${user2BorrowUsdcUnits} USDC to BSC`);
-  const quoteRes = await fetch(`${RELAYER_API_URL}/quote?intentType=3&amount=${user2BorrowUsdcAmount.toString()}`);
-  if (!quoteRes.ok) {
-    throw new Error(`quote failed: ${quoteRes.status} ${await quoteRes.text()}`);
-  }
-  const quote = await quoteRes.json();
-  const relayerFee = BigInt(quote.fee);
-
-  const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  const borrowIntent = {
+  const borrowSubmission = await submitOutboundIntent({
+    label: "USER2 borrow",
     intentType: 3,
-    user: user2.address,
-    inputChainId: BigInt(deployments.spokes.bsc.chainId),
-    outputChainId: BigInt(deployments.spokes.bsc.chainId),
-    inputToken: bscUsdc,
-    outputToken: bscUsdc,
     amount: user2BorrowUsdcAmount,
-    recipient: user2.address,
-    maxRelayerFee: relayerFee,
-    nonce: BigInt(Date.now()),
-    deadline: nowSec + 1800n
-  };
-
-  const borrowSignature = await user2.signTypedData({
-    domain: {
-      name: "ElHubIntentInbox",
-      version: "1",
-      chainId: Number(deployments.hub.chainId),
-      verifyingContract: deployments.hub.intentInbox
-    },
-    types: intentTypes,
-    primaryType: "Intent",
-    message: borrowIntent
+    token: bscUsdc,
+    userAccount: user2,
+    spokeChainId: BigInt(deployments.spokes.bsc.chainId),
+    hubChainId: Number(deployments.hub.chainId),
+    intentInbox: deployments.hub.intentInbox,
+    relayerApiUrl: RELAYER_API_URL
   });
-
-  const borrowIntentId = rawIntentId(borrowIntent);
-  const submitRes = await fetch(`${RELAYER_API_URL}/intent/submit`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      intent: {
-        ...borrowIntent,
-        inputChainId: borrowIntent.inputChainId.toString(),
-        outputChainId: borrowIntent.outputChainId.toString(),
-        amount: borrowIntent.amount.toString(),
-        maxRelayerFee: borrowIntent.maxRelayerFee.toString(),
-        nonce: borrowIntent.nonce.toString(),
-        deadline: borrowIntent.deadline.toString()
-      },
-      signature: borrowSignature,
-      relayerFee: relayerFee.toString()
-    })
-  });
-  if (!submitRes.ok) {
-    throw new Error(`borrow submit failed: ${submitRes.status} ${await submitRes.text()}`);
-  }
-  const submitPayload = await submitRes.json();
-  const dispatchTx = submitPayload.dispatchTx;
-  if (!dispatchTx) {
-    throw new Error("missing dispatchTx for borrow");
-  }
+  const borrowIntentId = borrowSubmission.intentId;
+  const dispatchTx = borrowSubmission.dispatchTx;
   evidence.user2BorrowDispatchTx = dispatchTx;
 
   const borrowAcrossMeta = await decodeAcrossFundsDeposited({
@@ -562,57 +630,299 @@ async function main() {
 
   await postInternal(PROVER_API_URL, "/internal/flush", {}, INTERNAL_API_AUTH_SECRET);
 
+  const borrowTerminalStatus = await waitForIntentTerminalStatus({
+    indexerApiUrl: INDEXER_API_URL,
+    intentId: borrowIntentId,
+    acceptable: ["settled", "failed", "expired_unwound"],
+    label: "borrow terminal status",
+    timeoutMs: 900_000
+  });
+  evidence.user2BorrowFinalStatus = borrowTerminalStatus;
+
+  if (borrowTerminalStatus !== "settled") {
+    throw new Error(`USER2 borrow must settle for repay+withdraw flow, got ${borrowTerminalStatus}`);
+  }
+
   await waitUntil(
     async () => {
-      const res = await fetch(`${INDEXER_API_URL}/intents/${borrowIntentId}`);
-      if (!res.ok) return false;
-      const payload = await res.json();
-      return payload.status === "settled" || payload.status === "expired_unwound";
+      const current = await hubPublic.readContract({
+        abi: HubMoneyMarketAbi,
+        address: moneyMarket,
+        functionName: "getUserDebt",
+        args: [user2.address, usdcHub]
+      });
+      return current > 0n;
     },
-    "borrow settlement or expiry unwind",
-    900_000
+    "USER2 USDC debt after borrow settlement",
+    180_000
   );
 
-  const borrowIntentRecord = await fetch(`${INDEXER_API_URL}/intents/${borrowIntentId}`).then((res) => res.json());
-  evidence.user2BorrowFinalStatus = String(borrowIntentRecord.status ?? "unknown");
+  const user2BscUsdcAfter = await bscPublic.readContract({
+    abi: ERC20Abi,
+    address: bscUsdc,
+    functionName: "balanceOf",
+    args: [user2.address]
+  });
+  const borrowFill = await waitForBorrowFillLog({
+    bscPublic,
+    borrowReceiver: deployments.spokes.bsc.borrowReceiver,
+    intentId: borrowIntentId,
+    fromBlock: borrowLogFromBlock
+  });
+  evidence.user2BorrowFillTx = borrowFill.txHash;
+  evidence.user2BorrowFillAmount = borrowFill.amount.toString();
+  evidence.user2BorrowFillFee = borrowFill.fee.toString();
 
-  if (borrowIntentRecord.status === "settled") {
-    await waitUntil(
-      async () => {
-        const current = await hubPublic.readContract({
-          abi: HubMoneyMarketAbi,
-          address: moneyMarket,
-          functionName: "getUserDebt",
-          args: [user2.address, usdcHub]
-        });
-        return current > 0n;
-      },
-      "USER2 USDC debt after borrow settlement",
-      180_000
-    );
+  const borrowExpectedNet = borrowFill.amount - borrowFill.fee;
+  if (user2BscUsdcAfter - user2BscUsdcBefore < borrowExpectedNet) {
+    throw new Error("expected USER2 BSC USDC balance increase from borrow fill");
+  }
 
-    const user2BscUsdcAfter = await bscPublic.readContract({
-      abi: ERC20Abi,
-      address: bscUsdc,
-      functionName: "balanceOf",
-      args: [user2.address]
+  const reservedDebtAfterBorrow = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedDebt",
+    args: [user2.address, usdcHub]
+  });
+  if (reservedDebtAfterBorrow !== 0n) {
+    throw new Error(`borrow settled but reservedDebt > 0: ${reservedDebtAfterBorrow.toString()}`);
+  }
+  const reservedLiquidityAfterBorrow = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedLiquidity",
+    args: [usdcHub]
+  });
+  if (reservedLiquidityAfterBorrow !== 0n) {
+    throw new Error(`borrow settled but reservedLiquidity > 0: ${reservedLiquidityAfterBorrow.toString()}`);
+  }
+
+  const user2DebtBeforeRepay = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserDebt",
+    args: [user2.address, usdcHub]
+  });
+  evidence.user2DebtBeforeRepay = user2DebtBeforeRepay.toString();
+  if (user2DebtBeforeRepay === 0n) {
+    throw new Error("expected USER2 debt > 0 after settled borrow");
+  }
+
+  const repayTargetHubAmount = user2DebtBeforeRepay + user2RepayBufferHubAmount;
+  const repayTargetBscAmount = scaleAmountUnits(repayTargetHubAmount, hubUsdcDecimals, bscUsdcDecimals);
+  let user2BscUsdcForRepay = await bscPublic.readContract({
+    abi: ERC20Abi,
+    address: bscUsdc,
+    functionName: "balanceOf",
+    args: [user2.address]
+  });
+  if (user2BscUsdcForRepay < repayTargetBscAmount) {
+    const topupResult = await ensureSpokeRecipientBalanceViaAcross({
+      sourcePublic: worldPublic,
+      destinationPublic: bscPublic,
+      sourceWallet: worldUser1Wallet,
+      sourceFunderWallet: worldDeployerWallet,
+      sourceFunderPublic: worldPublic,
+      sourceToken: worldUsdc,
+      sourceTokenDecimals: worldUsdcDecimals,
+      sourceTokenSymbol: "USDC",
+      destinationToken: bscUsdc,
+      sourceAcrossSpokePool: worldAcrossSpokePool,
+      sourceChainId: BigInt(deployments.spokes.worldchain.chainId),
+      destinationChainId: BigInt(deployments.spokes.bsc.chainId),
+      recipient: user2.address,
+      minDestinationBalance: repayTargetBscAmount,
+      topupBufferAmount: user2RepayBufferBscAmount,
+      erc20Abi: ERC20Abi,
+      flowLabel: "USER2 repay top-up"
     });
-    const borrowFill = await waitForBorrowFillLog({
-      bscPublic,
-      borrowReceiver: deployments.spokes.bsc.borrowReceiver,
-      intentId: borrowIntentId,
-      fromBlock: borrowLogFromBlock
-    });
-    evidence.user2BorrowFillTx = borrowFill.txHash;
-    evidence.user2BorrowFillAmount = borrowFill.amount.toString();
-    evidence.user2BorrowFillFee = borrowFill.fee.toString();
-
-    const expectedNet = borrowFill.amount - borrowFill.fee;
-    if (user2BscUsdcAfter - user2BscUsdcBefore < expectedNet) {
-      throw new Error("expected USER2 BSC USDC balance increase from borrow fill");
+    if (topupResult.txHash) {
+      evidence.user2RepayTopupTx = topupResult.txHash;
+      evidence.user2RepayTopupAcrossDepositId = topupResult.acrossDepositId;
+      evidence.user2RepayTopupAmount = topupResult.inputAmount.toString();
     }
-  } else if (borrowIntentRecord.status !== "expired_unwound") {
-    throw new Error(`unexpected borrow terminal status: ${borrowIntentRecord.status}`);
+    user2BscUsdcForRepay = topupResult.balanceAfter;
+  }
+  if (user2BscUsdcForRepay < repayTargetBscAmount) {
+    throw new Error(
+      `USER2 BSC balance still below repay target after top-up: have ${user2BscUsdcForRepay.toString()} need ${repayTargetBscAmount.toString()}`
+    );
+  }
+
+  console.log(
+    `[e2e-live] USER2 repay target ${repayTargetBscAmount.toString()} BSC USDC (debt + buffer)`
+  );
+  const repayResult = await runInboundFromSpoke({
+    label: "USER2 USDC repay",
+    portalFunctionName: "initiateRepay",
+    spokePublic: bscPublic,
+    spokeWallet: bscUser2Wallet,
+    portal: bscPortal,
+    spokeToken: bscUsdc,
+    hubToken: usdcHub,
+    amount: repayTargetBscAmount,
+    acrossSpokePool: bscAcrossSpokePool,
+    destinationChainId: BigInt(deployments.hub.chainId),
+    destinationReceiver: deployments.hub.hubAcrossReceiver,
+    indexerApiUrl: INDEXER_API_URL,
+    proverApiUrl: PROVER_API_URL,
+    internalSecret: INTERNAL_API_AUTH_SECRET,
+    erc20Abi: ERC20Abi,
+    spokePortalAbi: SpokePortalAbi,
+    sourceChainId: BigInt(deployments.spokes.bsc.chainId)
+  });
+  evidence.user2RepayTx = repayResult.txHash;
+  evidence.user2RepayAcrossDepositId = repayResult.acrossDepositId;
+
+  const user2DebtAfterRepay = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserDebt",
+    args: [user2.address, usdcHub]
+  });
+  evidence.user2DebtAfterRepay = user2DebtAfterRepay.toString();
+  if (user2DebtAfterRepay > user2RepayDebtDustHubAmount) {
+    throw new Error(
+      `expected USER2 debt <= dust after repay (${user2DebtAfterRepay.toString()} > ${user2RepayDebtDustHubAmount.toString()})`
+    );
+  }
+
+  await stopChildren([stage.relayer, stage.prover]);
+
+  console.log("[e2e-live] stage worldchain (withdraw): starting prover + relayer");
+  stage = await startStageServices({
+    name: WORLD_NETWORK,
+    chainId: Number(deployments.spokes.worldchain.chainId),
+    rpcUrl: deployments.spokes.worldchain.rpcUrl,
+    relayerTrackingPath: path.join(dataDir, "relayer-worldchain-withdraw.json"),
+    commonServiceEnv,
+    spokeToHubMap: Object.fromEntries(
+      Object.entries(deployments.tokens).map(([symbol, token]) => [token.spokes.worldchain.toLowerCase(), token.hub])
+    )
+  });
+
+  const user1HubSupplyBeforeWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserSupply",
+    args: [user1.address, usdcHub]
+  });
+  if (user1HubSupplyBeforeWithdraw === 0n) {
+    throw new Error("expected USER1 hub USDC supply > 0 before withdraw");
+  }
+  const user1WithdrawAmount = bpsAmount(user1HubSupplyBeforeWithdraw, user1WithdrawBps);
+  if (user1WithdrawAmount === 0n) {
+    throw new Error("USER1 withdraw amount resolved to zero");
+  }
+  const user1WorldUsdcBeforeWithdraw = await worldPublic.readContract({
+    abi: ERC20Abi,
+    address: worldUsdc,
+    functionName: "balanceOf",
+    args: [user1.address]
+  });
+  const user1WithdrawSubmission = await submitOutboundIntent({
+    label: "USER1 withdraw USDC",
+    intentType: 4,
+    amount: user1WithdrawAmount,
+    token: worldUsdc,
+    userAccount: user1,
+    spokeChainId: BigInt(deployments.spokes.worldchain.chainId),
+    hubChainId: Number(deployments.hub.chainId),
+    intentInbox: deployments.hub.intentInbox,
+    relayerApiUrl: RELAYER_API_URL
+  });
+  evidence.user1WithdrawDispatchTx = user1WithdrawSubmission.dispatchTx;
+  await postInternal(PROVER_API_URL, "/internal/flush", {}, INTERNAL_API_AUTH_SECRET);
+  evidence.user1WithdrawFinalStatus = await waitForIntentTerminalStatus({
+    indexerApiUrl: INDEXER_API_URL,
+    intentId: user1WithdrawSubmission.intentId,
+    acceptable: ["settled", "failed", "expired_unwound"],
+    label: "USER1 withdraw terminal status",
+    timeoutMs: 900_000
+  });
+  if (evidence.user1WithdrawFinalStatus !== "settled") {
+    throw new Error(`expected USER1 withdraw settled status, got ${evidence.user1WithdrawFinalStatus}`);
+  }
+  const user1HubSupplyAfterWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserSupply",
+    args: [user1.address, usdcHub]
+  });
+  if (user1HubSupplyAfterWithdraw >= user1HubSupplyBeforeWithdraw) {
+    throw new Error("expected USER1 hub supply to decrease after withdraw");
+  }
+  const user1WorldUsdcAfterWithdraw = await worldPublic.readContract({
+    abi: ERC20Abi,
+    address: worldUsdc,
+    functionName: "balanceOf",
+    args: [user1.address]
+  });
+  const user1WithdrawExpectedNet = user1WithdrawAmount - user1WithdrawSubmission.relayerFee;
+  if (user1WorldUsdcAfterWithdraw - user1WorldUsdcBeforeWithdraw < user1WithdrawExpectedNet) {
+    throw new Error("expected USER1 spoke USDC balance increase from withdraw fill");
+  }
+
+  const user2HubSupplyBeforeWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserSupply",
+    args: [user2.address, wethHub]
+  });
+  if (user2HubSupplyBeforeWithdraw === 0n) {
+    throw new Error("expected USER2 hub WETH supply > 0 before withdraw");
+  }
+  const user2WithdrawAmount = bpsAmount(user2HubSupplyBeforeWithdraw, user2WithdrawBps);
+  if (user2WithdrawAmount === 0n) {
+    throw new Error("USER2 withdraw amount resolved to zero");
+  }
+  const user2WorldWethBeforeWithdraw = await worldPublic.readContract({
+    abi: ERC20Abi,
+    address: worldWeth,
+    functionName: "balanceOf",
+    args: [user2.address]
+  });
+  const user2WithdrawSubmission = await submitOutboundIntent({
+    label: "USER2 withdraw WETH",
+    intentType: 4,
+    amount: user2WithdrawAmount,
+    token: worldWeth,
+    userAccount: user2,
+    spokeChainId: BigInt(deployments.spokes.worldchain.chainId),
+    hubChainId: Number(deployments.hub.chainId),
+    intentInbox: deployments.hub.intentInbox,
+    relayerApiUrl: RELAYER_API_URL
+  });
+  evidence.user2WithdrawDispatchTx = user2WithdrawSubmission.dispatchTx;
+  await postInternal(PROVER_API_URL, "/internal/flush", {}, INTERNAL_API_AUTH_SECRET);
+  evidence.user2WithdrawFinalStatus = await waitForIntentTerminalStatus({
+    indexerApiUrl: INDEXER_API_URL,
+    intentId: user2WithdrawSubmission.intentId,
+    acceptable: ["settled", "failed", "expired_unwound"],
+    label: "USER2 withdraw terminal status",
+    timeoutMs: 900_000
+  });
+  if (evidence.user2WithdrawFinalStatus !== "settled") {
+    throw new Error(`expected USER2 withdraw settled status, got ${evidence.user2WithdrawFinalStatus}`);
+  }
+  const user2HubSupplyAfterWithdraw = await hubPublic.readContract({
+    abi: HubMoneyMarketAbi,
+    address: moneyMarket,
+    functionName: "getUserSupply",
+    args: [user2.address, wethHub]
+  });
+  if (user2HubSupplyAfterWithdraw >= user2HubSupplyBeforeWithdraw) {
+    throw new Error("expected USER2 hub supply to decrease after withdraw");
+  }
+  const user2WorldWethAfterWithdraw = await worldPublic.readContract({
+    abi: ERC20Abi,
+    address: worldWeth,
+    functionName: "balanceOf",
+    args: [user2.address]
+  });
+  const user2WithdrawExpectedNet = user2WithdrawAmount - user2WithdrawSubmission.relayerFee;
+  if (user2WorldWethAfterWithdraw - user2WorldWethBeforeWithdraw < user2WithdrawExpectedNet) {
+    throw new Error("expected USER2 spoke WETH balance increase from withdraw fill");
   }
 
   const reservedDebtAfter = await hubPublic.readContract({
@@ -625,22 +935,31 @@ async function main() {
     throw new Error(`borrow terminal status left reservedDebt > 0: ${reservedDebtAfter.toString()}`);
   }
 
-  const reservedLiquidityAfter = await hubPublic.readContract({
+  const reservedLiquidityUsdcAfter = await hubPublic.readContract({
     abi: HubLockManagerOpsAbi,
     address: lockManager,
     functionName: "reservedLiquidity",
     args: [usdcHub]
   });
-  if (reservedLiquidityAfter !== 0n) {
-    throw new Error(`borrow terminal status left reservedLiquidity > 0: ${reservedLiquidityAfter.toString()}`);
+  if (reservedLiquidityUsdcAfter !== 0n) {
+    throw new Error(`terminal status left USDC reservedLiquidity > 0: ${reservedLiquidityUsdcAfter.toString()}`);
+  }
+  const reservedLiquidityWethAfter = await hubPublic.readContract({
+    abi: HubLockManagerOpsAbi,
+    address: lockManager,
+    functionName: "reservedLiquidity",
+    args: [wethHub]
+  });
+  if (reservedLiquidityWethAfter !== 0n) {
+    throw new Error(`terminal status left WETH reservedLiquidity > 0: ${reservedLiquidityWethAfter.toString()}`);
   }
 
   await stopChildren([stage.relayer, stage.prover]);
 
   console.log("[e2e-live] ==================================================");
-  console.log("[e2e-live] PASS: Base hub live scenario (World supplies + BSC borrow)");
+  console.log("[e2e-live] PASS: Base hub live scenario (World supply + BSC borrow/repay + World withdraw)");
   console.log(
-    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrow reached terminal status=${evidence.user2BorrowFinalStatus}, reserved debt/liquidity are zero`
+    `[e2e-live] checks: USER1 supplied ${user1UsdcSupplyUnits} USDC, USER2 supplied ${user2WethSupplyUnits} WETH, USER2 borrow+repay settled, USER1+USER2 withdraw settled, reserved debt/liquidity are zero`
   );
   console.log("[e2e-live] evidence:", JSON.stringify(evidence, null, 2));
   console.log("[e2e-live] ==================================================");
@@ -677,8 +996,9 @@ async function startStageServices({ name, chainId, rpcUrl, relayerTrackingPath, 
   return { prover, relayer };
 }
 
-async function runSupplyFromSpoke({
+async function runInboundFromSpoke({
   label,
+  portalFunctionName,
   spokePublic,
   spokeWallet,
   portal,
@@ -733,7 +1053,7 @@ async function runSupplyFromSpoke({
   const txHash = await writeAndWait(spokeWallet, spokePublic, {
     abi: spokePortalAbi,
     address: portal,
-    functionName: "initiateSupply",
+    functionName: portalFunctionName,
     args: [spokeToken, amount, spokeWallet.account.address, quote]
   });
 
@@ -789,11 +1109,253 @@ async function runSupplyFromSpoke({
   };
 }
 
+async function submitOutboundIntent({
+  label,
+  intentType,
+  amount,
+  token,
+  userAccount,
+  spokeChainId,
+  hubChainId,
+  intentInbox,
+  relayerApiUrl
+}) {
+  const quoteRes = await fetch(`${relayerApiUrl}/quote?intentType=${intentType}&amount=${amount.toString()}`);
+  if (!quoteRes.ok) {
+    throw new Error(`${label} quote failed: ${quoteRes.status} ${await quoteRes.text()}`);
+  }
+  const quote = await quoteRes.json();
+  const relayerFee = BigInt(quote.fee);
+  if (relayerFee >= amount) {
+    throw new Error(`${label} relayer fee must be < intent amount (${relayerFee.toString()} >= ${amount.toString()})`);
+  }
+
+  const intent = {
+    intentType,
+    user: userAccount.address,
+    inputChainId: spokeChainId,
+    outputChainId: spokeChainId,
+    inputToken: token,
+    outputToken: token,
+    amount,
+    recipient: userAccount.address,
+    maxRelayerFee: relayerFee,
+    nonce: nextIntentNonce(),
+    deadline: BigInt(Math.floor(Date.now() / 1000)) + 1800n
+  };
+
+  const signature = await userAccount.signTypedData({
+    domain: {
+      name: "ElHubIntentInbox",
+      version: "1",
+      chainId: hubChainId,
+      verifyingContract: intentInbox
+    },
+    types: intentTypes,
+    primaryType: "Intent",
+    message: intent
+  });
+
+  const intentId = rawIntentId(intent);
+  const submitRes = await fetch(`${relayerApiUrl}/intent/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      intent: {
+        ...intent,
+        inputChainId: intent.inputChainId.toString(),
+        outputChainId: intent.outputChainId.toString(),
+        amount: intent.amount.toString(),
+        maxRelayerFee: intent.maxRelayerFee.toString(),
+        nonce: intent.nonce.toString(),
+        deadline: intent.deadline.toString()
+      },
+      signature,
+      relayerFee: relayerFee.toString()
+    })
+  });
+  if (!submitRes.ok) {
+    throw new Error(`${label} submit failed: ${submitRes.status} ${await submitRes.text()}`);
+  }
+  const submitPayload = await submitRes.json();
+  const dispatchTx = String(submitPayload.dispatchTx ?? "");
+  if (!dispatchTx) {
+    throw new Error(`${label} missing dispatchTx`);
+  }
+
+  return {
+    intentId,
+    dispatchTx,
+    relayerFee
+  };
+}
+
+async function waitForIntentTerminalStatus({ indexerApiUrl, intentId, acceptable, label, timeoutMs }) {
+  let terminalStatus = "";
+  await waitUntil(
+    async () => {
+      const res = await fetch(`${indexerApiUrl}/intents/${intentId}`);
+      if (!res.ok) return false;
+      const payload = await res.json();
+      const status = String(payload.status ?? "");
+      if (!status) return false;
+      if (!acceptable.includes(status)) return false;
+      terminalStatus = status;
+      return true;
+    },
+    label,
+    timeoutMs
+  );
+  return terminalStatus;
+}
+
+async function ensureSpokeRecipientBalanceViaAcross({
+  sourcePublic,
+  destinationPublic,
+  sourceWallet,
+  sourceFunderWallet,
+  sourceFunderPublic,
+  sourceToken,
+  sourceTokenDecimals,
+  sourceTokenSymbol,
+  destinationToken,
+  sourceAcrossSpokePool,
+  sourceChainId,
+  destinationChainId,
+  recipient,
+  minDestinationBalance,
+  topupBufferAmount,
+  erc20Abi,
+  flowLabel
+}) {
+  const balanceBefore = await destinationPublic.readContract({
+    abi: erc20Abi,
+    address: destinationToken,
+    functionName: "balanceOf",
+    args: [recipient]
+  });
+  if (balanceBefore >= minDestinationBalance) {
+    return {
+      txHash: "",
+      acrossDepositId: "",
+      inputAmount: 0n,
+      balanceBefore,
+      balanceAfter: balanceBefore
+    };
+  }
+
+  const shortfall = minDestinationBalance - balanceBefore;
+  const inputAmount = shortfall + topupBufferAmount;
+  const sourceBalance = await sourcePublic.readContract({
+    abi: erc20Abi,
+    address: sourceToken,
+    functionName: "balanceOf",
+    args: [sourceWallet.account.address]
+  });
+  if (sourceBalance < inputAmount) {
+    await ensureTokenBalance({
+      publicClient: sourcePublic,
+      walletAddress: sourceWallet.account.address,
+      tokenAddress: sourceToken,
+      minBalance: inputAmount,
+      label: `${flowLabel} source token`,
+      tokenSymbol: sourceTokenSymbol,
+      tokenDecimals: sourceTokenDecimals,
+      erc20Abi,
+      funderWalletClient: sourceFunderWallet,
+      funderPublicClient: sourceFunderPublic ?? sourcePublic
+    });
+  }
+
+  await writeAndWait(sourceWallet, sourcePublic, {
+    abi: erc20Abi,
+    address: sourceToken,
+    functionName: "approve",
+    args: [sourceAcrossSpokePool, inputAmount]
+  });
+
+  const quote = await fetchAcrossSuggestedFee({
+    originChainId: sourceChainId,
+    destinationChainId,
+    inputToken: sourceToken,
+    outputToken: destinationToken,
+    amount: inputAmount,
+    recipient
+  });
+
+  const txHash = await writeAndWait(sourceWallet, sourcePublic, {
+    abi: AcrossSpokePoolAbi,
+    address: sourceAcrossSpokePool,
+    functionName: "depositV3",
+    args: [
+      sourceWallet.account.address,
+      recipient,
+      sourceToken,
+      destinationToken,
+      inputAmount,
+      quote.outputAmount,
+      destinationChainId,
+      ZERO_ADDRESS,
+      quote.quoteTimestamp,
+      quote.fillDeadline,
+      0,
+      "0x"
+    ]
+  });
+
+  const acrossMeta = await decodeAcrossFundsDeposited({
+    sourcePublic,
+    sourceAcrossSpokePool,
+    sourceTxHash: txHash,
+    expectedDestinationChainId: destinationChainId,
+    flowLabel
+  });
+
+  await waitUntil(
+    async () => {
+      const current = await destinationPublic.readContract({
+        abi: erc20Abi,
+        address: destinationToken,
+        functionName: "balanceOf",
+        args: [recipient]
+      });
+      return current > balanceBefore;
+    },
+    `${flowLabel} fill`,
+    900_000,
+    5_000
+  );
+
+  const balanceAfter = await destinationPublic.readContract({
+    abi: erc20Abi,
+    address: destinationToken,
+    functionName: "balanceOf",
+    args: [recipient]
+  });
+  if (balanceAfter < minDestinationBalance) {
+    throw new Error(
+      `${flowLabel}: destination balance still below minimum after top-up (${balanceAfter.toString()} < ${minDestinationBalance.toString()})`
+    );
+  }
+
+  return {
+    txHash,
+    acrossDepositId: acrossMeta.depositId.toString(),
+    inputAmount,
+    balanceBefore,
+    balanceAfter
+  };
+}
+
 async function ensureRelayerHubLiquidityViaAcross({
   hubPublic,
   sourcePublic,
   sourceWallet,
+  sourceFunderWallet,
+  sourceFunderPublic,
   sourceToken,
+  sourceTokenDecimals,
+  sourceTokenSymbol,
   sourceAcrossSpokePool,
   destinationToken,
   sourceChainId,
@@ -827,9 +1389,18 @@ async function ensureRelayerHubLiquidityViaAcross({
     args: [sourceWallet.account.address]
   });
   if (sourceBalance < topupInputAmount) {
-    throw new Error(
-      `insufficient source token balance for relayer top-up: have ${sourceBalance.toString()} need ${topupInputAmount.toString()}`
-    );
+    await ensureTokenBalance({
+      publicClient: sourcePublic,
+      walletAddress: sourceWallet.account.address,
+      tokenAddress: sourceToken,
+      minBalance: topupInputAmount,
+      label: "relayer top-up source token",
+      tokenSymbol: sourceTokenSymbol,
+      tokenDecimals: sourceTokenDecimals,
+      erc20Abi,
+      funderWalletClient: sourceFunderWallet,
+      funderPublicClient: sourceFunderPublic ?? sourcePublic
+    });
   }
 
   console.log(
@@ -1205,6 +1776,15 @@ function scaleAmountUnits(amount, fromDecimals, toDecimals) {
   return amount * 10n ** BigInt(toDecimals - fromDecimals);
 }
 
+function bpsAmount(amount, bps) {
+  return amount * BigInt(bps) / 10_000n;
+}
+
+function nextIntentNonce() {
+  intentNonceCursor += 1n;
+  return intentNonceCursor;
+}
+
 function isAddress(value) {
   return typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value);
 }
@@ -1345,13 +1925,105 @@ async function run(cmd, args, options) {
   });
 }
 
-async function ensureNativeBalance(publicClient, address, minBalanceWei, label) {
+async function ensureNativeBalance(publicClient, address, minBalanceWei, label, options = {}) {
   const current = await publicClient.getBalance({ address });
-  if (current < minBalanceWei) {
-    throw new Error(
-      `${label} has insufficient native balance (${formatEther(current)} < ${formatEther(minBalanceWei)})`
-    );
+  if (current >= minBalanceWei) {
+    return current;
   }
+
+  const funderWalletClient = options.funderWalletClient;
+  const funderPublicClient = options.funderPublicClient ?? publicClient;
+  const nativeSymbol = options.nativeSymbol ?? "ETH";
+  const shortfall = minBalanceWei - current;
+
+  if (
+    funderWalletClient
+    && String(funderWalletClient.account.address).toLowerCase() !== String(address).toLowerCase()
+  ) {
+    const funderBalance = await funderPublicClient.getBalance({ address: funderWalletClient.account.address });
+    if (funderBalance >= shortfall) {
+      const txHash = await funderWalletClient.sendTransaction({
+        account: funderWalletClient.account,
+        to: address,
+        value: shortfall
+      });
+      await funderPublicClient.waitForTransactionReceipt({ hash: txHash });
+      const after = await publicClient.getBalance({ address });
+      if (after >= minBalanceWei) {
+        console.log(
+          `[e2e-live] funded ${label} with ${formatEther(shortfall)} ${nativeSymbol} from deployer (tx=${txHash})`
+        );
+        return after;
+      }
+    }
+  }
+
+  throw new Error(
+    `${label} has insufficient native balance (${formatEther(current)} < ${formatEther(minBalanceWei)})`
+  );
+}
+
+async function ensureTokenBalance({
+  publicClient,
+  walletAddress,
+  tokenAddress,
+  minBalance,
+  label,
+  tokenSymbol,
+  tokenDecimals,
+  erc20Abi,
+  funderWalletClient,
+  funderPublicClient
+}) {
+  const current = await publicClient.readContract({
+    abi: erc20Abi,
+    address: tokenAddress,
+    functionName: "balanceOf",
+    args: [walletAddress]
+  });
+  if (current >= minBalance) {
+    return current;
+  }
+
+  const shortfall = minBalance - current;
+  if (
+    funderWalletClient
+    && String(funderWalletClient.account.address).toLowerCase() !== String(walletAddress).toLowerCase()
+  ) {
+    const sourceBalance = await publicClient.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      functionName: "balanceOf",
+      args: [funderWalletClient.account.address]
+    });
+    if (sourceBalance >= shortfall) {
+      const txHash = await writeAndWait(funderWalletClient, funderPublicClient ?? publicClient, {
+        abi: erc20Abi,
+        address: tokenAddress,
+        functionName: "transfer",
+        args: [walletAddress, shortfall]
+      });
+      const after = await publicClient.readContract({
+        abi: erc20Abi,
+        address: tokenAddress,
+        functionName: "balanceOf",
+        args: [walletAddress]
+      });
+      if (after >= minBalance) {
+        const formattedShortfall = typeof tokenDecimals === "number"
+          ? formatUnits(shortfall, tokenDecimals)
+          : shortfall.toString();
+        console.log(
+          `[e2e-live] funded ${label} with ${formattedShortfall} ${tokenSymbol ?? "token"} from deployer (tx=${txHash})`
+        );
+        return after;
+      }
+    }
+  }
+
+  throw new Error(
+    `${label} is insufficient (have ${current.toString()} need ${minBalance.toString()})`
+  );
 }
 
 function sleep(ms) {

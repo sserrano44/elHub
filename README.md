@@ -276,6 +276,59 @@ node scripts/debug-borrow-proof-path.mjs \
   --payload /path/to/borrow-fill-task-or-payload.json
 ```
 
+### Live test funds recovery
+
+Use the recovery utility to do best-effort cleanup across historical live test runs (protocol state + operator/user wallets).
+
+Dry-run (default, no writes):
+
+```bash
+pnpm recover:live:funds
+```
+
+Execute writes:
+
+```bash
+pnpm recover:live:funds:execute
+```
+
+Common overrides:
+
+```bash
+node scripts/recover-live-test-funds.mjs \
+  --execute \
+  --history-scope all \
+  --recovery-to 0xYourSink \
+  --include-user-wallets true \
+  --max-txs 200 \
+  --report-file contracts/deployments/recovery-report-manual.json
+```
+
+Custom targets mode:
+
+```json
+{
+  "lockManagers": [
+    { "chainId": 8453, "address": "0x..." }
+  ],
+  "hubReceivers": [
+    { "chainId": 8453, "address": "0x..." }
+  ]
+}
+```
+
+```bash
+node scripts/recover-live-test-funds.mjs \
+  --history-scope custom \
+  --custom-targets /absolute/path/to/targets.json
+```
+
+The script writes a JSON report under `contracts/deployments/` by default with:
+1. discovered targets/wallets
+2. planned and executed operations
+3. tx hashes, skips, failures
+4. unresolved items that need manual follow-up
+
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`
 - Jobs:

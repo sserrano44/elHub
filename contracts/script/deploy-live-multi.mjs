@@ -33,6 +33,8 @@ const NETWORK_CATALOG = {
 
 const LIVE_MODE = (process.env.LIVE_MODE ?? "1") !== "0";
 const ALLOW_TENDERLY_RPC = (process.env.ALLOW_TENDERLY_RPC ?? process.env.E2E_ALLOW_TENDERLY_RPC ?? "0") !== "0";
+const LIVE_DEPLOY_STRATEGY = normalizeDeployStrategy(process.env.LIVE_DEPLOY_STRATEGY ?? "incremental");
+const MANIFEST_VERSION = 2;
 const HUB_NETWORK = normalizeNetwork(process.env.HUB_NETWORK ?? "base");
 const HUB_DEFAULTS = NETWORK_CATALOG[HUB_NETWORK];
 const HUB_CHAIN_ID = Number(process.env.HUB_CHAIN_ID ?? process.env[`${HUB_DEFAULTS.envPrefix}_CHAIN_ID`] ?? HUB_DEFAULTS.chainId);
@@ -168,6 +170,13 @@ function normalizeNetwork(value) {
   if (normalized in NETWORK_CATALOG) return normalized;
 
   throw new Error(`Unsupported network=${value}. Use one of: ${Object.keys(NETWORK_CATALOG).join(", ")}`);
+}
+
+function normalizeDeployStrategy(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized || normalized === "incremental") return "incremental";
+  if (normalized === "fresh") return "fresh";
+  throw new Error(`Invalid LIVE_DEPLOY_STRATEGY=${value}. Use incremental or fresh.`);
 }
 
 function resolveRpcEnv(networkConfig) {
@@ -378,6 +387,8 @@ function normalizeDispatcherRoute(route) {
     spokePool: String(route?.spokePool ?? (Array.isArray(route) ? route[0] : "")),
     spokeToken: String(route?.spokeToken ?? (Array.isArray(route) ? route[1] : "")),
     spokeReceiver: String(route?.spokeReceiver ?? (Array.isArray(route) ? route[2] : "")),
+    fillDeadlineBuffer: Number(route?.fillDeadlineBuffer ?? (Array.isArray(route) ? route[3] : 0)),
+    maxQuoteAge: Number(route?.maxQuoteAge ?? (Array.isArray(route) ? route[4] : 0)),
     enabled: Boolean(route?.enabled ?? (Array.isArray(route) ? route[5] : false))
   };
 }
@@ -387,6 +398,8 @@ function dispatcherRouteMatches(observed, expected) {
     observed.spokePool.toLowerCase() === expected.spokePool.toLowerCase()
     && observed.spokeToken.toLowerCase() === expected.spokeToken.toLowerCase()
     && observed.spokeReceiver.toLowerCase() === expected.spokeReceiver.toLowerCase()
+    && observed.fillDeadlineBuffer === expected.fillDeadlineBuffer
+    && observed.maxQuoteAge === expected.maxQuoteAge
     && observed.enabled === expected.enabled
   );
 }
@@ -419,7 +432,7 @@ async function waitForDispatcherRoute({
   }
 
   throw new Error(
-    `Dispatcher route mismatch ${label} expected(pool=${expected.spokePool}, token=${expected.spokeToken}, receiver=${expected.spokeReceiver}, enabled=${expected.enabled}) observed(pool=${lastObserved.spokePool}, token=${lastObserved.spokeToken}, receiver=${lastObserved.spokeReceiver}, enabled=${lastObserved.enabled})`
+    `Dispatcher route mismatch ${label} expected(pool=${expected.spokePool}, token=${expected.spokeToken}, receiver=${expected.spokeReceiver}, fillDeadlineBuffer=${expected.fillDeadlineBuffer}, maxQuoteAge=${expected.maxQuoteAge}, enabled=${expected.enabled}) observed(pool=${lastObserved.spokePool}, token=${lastObserved.spokeToken}, receiver=${lastObserved.spokeReceiver}, fillDeadlineBuffer=${lastObserved.fillDeadlineBuffer}, maxQuoteAge=${lastObserved.maxQuoteAge}, enabled=${lastObserved.enabled})`
   );
 }
 
@@ -531,6 +544,9 @@ async function ensureTokenRoute({
   hubToken,
   spokeDecimals,
   spokeToken,
+  network = HUB_NETWORK,
+  actionRows = [],
+  actionKey = `tokenRoute.${chainId}.${hubToken}`,
   attempts = 6,
   delayMs = 1_500
 }) {
@@ -546,15 +562,44 @@ async function ensureTokenRoute({
     functionName: "getSpokeDecimalsByHub",
     args: [BigInt(chainId), hubToken]
   }));
-  if (currentSpoke && sameAddress(currentSpoke, spokeToken) && currentDecimals === spokeDecimals) return;
+  if (currentSpoke && sameAddress(currentSpoke, spokeToken) && currentDecimals === spokeDecimals) {
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key: actionKey,
+      proxy: tokenRegistryAddress,
+      target: tokenRegistryAddress,
+      detail: compactDetail({
+        spokeToken: currentSpoke,
+        spokeDecimals: currentDecimals
+      })
+    });
+    return;
+  }
 
   for (let i = 0; i < attempts; i += 1) {
     try {
-      await write(hubWallet, hubPublic, {
+      const tx = await write(hubWallet, hubPublic, {
         address: tokenRegistryAddress,
         abi: tokenRegistryAbi,
         functionName: "setTokenRoute",
         args: [BigInt(chainId), hubToken, spokeToken, spokeDecimals]
+      });
+      makeConfigActionRow(actionRows, {
+        action: "config-write",
+        network,
+        chainId,
+        key: actionKey,
+        proxy: tokenRegistryAddress,
+        target: tokenRegistryAddress,
+        tx,
+        detail: compactDetail({
+          previousSpoke: currentSpoke,
+          previousDecimals: currentDecimals,
+          spokeToken,
+          spokeDecimals
+        })
       });
       return;
     } catch (error) {
@@ -569,7 +614,11 @@ async function ensureMarketInitialized({
   hubPublic,
   moneyMarketAddress,
   marketAbi,
-  asset
+  asset,
+  network = HUB_NETWORK,
+  chainId = HUB_CHAIN_ID,
+  actionRows = [],
+  actionKey = `market.initialize.${asset}`
 }) {
   const market = await hubPublic.readContract({
     address: moneyMarketAddress,
@@ -578,17 +627,47 @@ async function ensureMarketInitialized({
     args: [asset]
   });
   const initialized = Array.isArray(market) ? Boolean(market[6]) : Boolean(market.initialized);
-  if (initialized) return;
+  if (initialized) {
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key: actionKey,
+      proxy: moneyMarketAddress,
+      target: moneyMarketAddress,
+      detail: compactDetail({ asset, initialized: true })
+    });
+    return;
+  }
 
   try {
-    await write(hubWallet, hubPublic, {
+    const tx = await write(hubWallet, hubPublic, {
       address: moneyMarketAddress,
       abi: marketAbi,
       functionName: "initializeMarket",
       args: [asset]
     });
+    makeConfigActionRow(actionRows, {
+      action: "config-write",
+      network,
+      chainId,
+      key: actionKey,
+      proxy: moneyMarketAddress,
+      target: moneyMarketAddress,
+      tx,
+      detail: compactDetail({ asset, initialized: true })
+    });
   } catch (error) {
     if (!isMarketAlreadyInitializedError(error)) throw error;
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key: actionKey,
+      proxy: moneyMarketAddress,
+      target: moneyMarketAddress,
+      detail: compactDetail({ asset, initialized: true, source: "already_initialized" })
+    });
   }
 }
 
@@ -629,24 +708,64 @@ async function ensureAccountBalance({
 const IMPLEMENTATION_SLOT =
   "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 
+function stableSerialize(value) {
+  return JSON.stringify(serializeForStableJson(value));
+}
+
+function serializeForStableJson(value) {
+  if (typeof value === "bigint") {
+    return { __type: "bigint", value: value.toString() };
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => serializeForStableJson(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, serializeForStableJson(value[key])])
+    );
+  }
+  return value;
+}
+
+function hashArgs(args) {
+  return keccak256(stringToHex(stableSerialize(args ?? [])));
+}
+
 function readManifest(filePath) {
   if (!fs.existsSync(filePath)) {
     return createFreshManifest();
   }
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  return normalizeManifest(JSON.parse(fs.readFileSync(filePath, "utf8")));
 }
 
 function createFreshManifest() {
   return {
-    version: 1,
+    version: MANIFEST_VERSION,
     updatedAt: new Date().toISOString(),
     uups: {},
     singletons: {},
-    metadata: {}
+    metadata: {
+      deployStrategy: LIVE_DEPLOY_STRATEGY
+    }
+  };
+}
+
+function normalizeManifest(manifest) {
+  return {
+    version: MANIFEST_VERSION,
+    updatedAt: String(manifest?.updatedAt ?? new Date().toISOString()),
+    uups: manifest?.uups && typeof manifest.uups === "object" ? manifest.uups : {},
+    singletons: manifest?.singletons && typeof manifest.singletons === "object" ? manifest.singletons : {},
+    metadata: manifest?.metadata && typeof manifest.metadata === "object"
+      ? { ...manifest.metadata }
+      : {}
   };
 }
 
 function writeManifest(filePath, manifest) {
+  manifest.version = MANIFEST_VERSION;
   manifest.updatedAt = new Date().toISOString();
   fs.writeFileSync(filePath, JSON.stringify(manifest, null, 2));
 }
@@ -659,12 +778,26 @@ function toAddressFromStorage(storageValue) {
 
 function appendActionLog(logPath, rows) {
   if (!fs.existsSync(logPath)) {
-    fs.writeFileSync(logPath, "# timestamp action network chainId key proxy oldImpl newImpl bytecodeHash tx\n");
+    fs.writeFileSync(logPath, "# timestamp action network chainId key proxy oldImpl newImpl bytecodeHash tx target detail\n");
   }
   if (rows.length === 0) return;
 
   const lines = rows.map((row) => {
-    return `${row.timestamp} action=${row.action} network=${row.network} chainId=${row.chainId} key=${row.key} proxy=${row.proxy ?? "-"} oldImpl=${row.oldImpl ?? "-"} newImpl=${row.newImpl ?? "-"} bytecodeHash=${row.bytecodeHash ?? "-"} tx=${row.tx ?? "-"}`;
+    const parts = [
+      row.timestamp,
+      `action=${row.action}`,
+      `network=${row.network}`,
+      `chainId=${row.chainId}`,
+      `key=${row.key}`,
+      `proxy=${row.proxy ?? "-"}`,
+      `oldImpl=${row.oldImpl ?? "-"}`,
+      `newImpl=${row.newImpl ?? "-"}`,
+      `bytecodeHash=${row.bytecodeHash ?? "-"}`,
+      `tx=${row.tx ?? "-"}`
+    ];
+    if (row.target) parts.push(`target=${row.target}`);
+    if (row.detail) parts.push(`detail=${row.detail}`);
+    return parts.join(" ");
   });
   fs.appendFileSync(logPath, `${lines.join("\n")}\n`);
 }
@@ -674,6 +807,62 @@ function makeActionRow(actionRows, row) {
     timestamp: new Date().toISOString(),
     ...row
   });
+}
+
+function makeConfigActionRow(actionRows, row) {
+  makeActionRow(actionRows, {
+    oldImpl: "-",
+    newImpl: "-",
+    bytecodeHash: "-",
+    tx: "-",
+    ...row
+  });
+}
+
+function makeUupsManifestEntry({
+  previous,
+  contractName,
+  proxy,
+  implementation,
+  runtimeBytecodeHash,
+  constructorArgs,
+  initArgs,
+  action,
+  txHash
+}) {
+  return {
+    ...previous,
+    proxy,
+    implementation,
+    runtimeBytecodeHash,
+    contractName,
+    constructorArgsHash: hashArgs(constructorArgs),
+    initArgsHash: hashArgs(initArgs),
+    lastAction: action,
+    lastTxHash: txHash ?? previous?.lastTxHash ?? "",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function makeSingletonManifestEntry({
+  previous,
+  contractName,
+  address,
+  runtimeBytecodeHash,
+  constructorArgs,
+  action,
+  txHash
+}) {
+  return {
+    ...previous,
+    address,
+    runtimeBytecodeHash,
+    contractName,
+    constructorArgsHash: hashArgs(constructorArgs),
+    lastAction: action,
+    lastTxHash: txHash ?? previous?.lastTxHash ?? "",
+    updatedAt: new Date().toISOString()
+  };
 }
 
 async function deployOrUpgradeUUPS({
@@ -700,13 +889,18 @@ async function deployOrUpgradeUUPS({
     });
     const proxyDeployment = await deploy(client, publicClient, "UUPSProxy", [implDeployment.address, data]);
 
-    manifest.uups[key] = {
+    manifest.uups[key] = makeUupsManifestEntry({
+      previous: entry,
+      contractName,
       proxy: proxyDeployment.address,
       implementation: implDeployment.address,
       runtimeBytecodeHash: artifact.runtimeBytecodeHash,
-      deployedAt: new Date().toISOString(),
-      lastTxHash: proxyDeployment.txHash
-    };
+      constructorArgs,
+      initArgs,
+      action: "deploy",
+      txHash: proxyDeployment.txHash
+    });
+    manifest.uups[key].deployedAt = manifest.uups[key].deployedAt ?? new Date().toISOString();
 
     makeActionRow(actionRows, {
       action: "deploy",
@@ -738,12 +932,19 @@ async function deployOrUpgradeUUPS({
   const currentImplHash = currentImplCode && currentImplCode !== "0x" ? keccak256(currentImplCode) : "0x";
 
   if (currentImplHash === artifact.runtimeBytecodeHash) {
-    manifest.uups[key] = {
-      ...entry,
+    manifest.uups[key] = makeUupsManifestEntry({
+      previous: entry,
+      contractName,
+      proxy,
       implementation: currentImpl,
       runtimeBytecodeHash: currentImplHash,
-      lastTxHash: entry.lastTxHash ?? ""
-    };
+      constructorArgs,
+      initArgs,
+      action: "skip",
+      txHash: entry.lastTxHash ?? ""
+    });
+    manifest.uups[key].deployedAt = entry.deployedAt ?? manifest.uups[key].deployedAt;
+    manifest.uups[key].upgradedAt = entry.upgradedAt ?? manifest.uups[key].upgradedAt;
 
     makeActionRow(actionRows, {
       action: "skip",
@@ -772,14 +973,19 @@ async function deployOrUpgradeUUPS({
     args: [implDeployment.address, "0x"]
   });
 
-  manifest.uups[key] = {
-    ...entry,
+  manifest.uups[key] = makeUupsManifestEntry({
+    previous: entry,
+    contractName,
     proxy,
     implementation: implDeployment.address,
     runtimeBytecodeHash: artifact.runtimeBytecodeHash,
-    upgradedAt: new Date().toISOString(),
-    lastTxHash: upgradeTx
-  };
+    constructorArgs,
+    initArgs,
+    action: "upgrade",
+    txHash: upgradeTx
+  });
+  manifest.uups[key].deployedAt = entry.deployedAt ?? manifest.uups[key].deployedAt;
+  manifest.uups[key].upgradedAt = new Date().toISOString();
 
   makeActionRow(actionRows, {
     action: "upgrade",
@@ -819,6 +1025,15 @@ async function deployOrReuseSingleton({
     if (code && code !== "0x") {
       const currentHash = keccak256(code);
       if (currentHash === artifact.runtimeBytecodeHash) {
+        manifest.singletons[key] = makeSingletonManifestEntry({
+          previous: entry,
+          contractName,
+          address: entry.address,
+          runtimeBytecodeHash: currentHash,
+          constructorArgs,
+          action: "skip",
+          txHash: entry.lastTxHash ?? ""
+        });
         makeActionRow(actionRows, {
           action: "skip",
           network,
@@ -836,12 +1051,15 @@ async function deployOrReuseSingleton({
   }
 
   const deployed = await deploy(client, publicClient, contractName, constructorArgs);
-  manifest.singletons[key] = {
+  manifest.singletons[key] = makeSingletonManifestEntry({
+    previous: entry,
+    contractName,
     address: deployed.address,
     runtimeBytecodeHash: artifact.runtimeBytecodeHash,
-    lastTxHash: deployed.txHash,
-    updatedAt: new Date().toISOString()
-  };
+    constructorArgs,
+    action: "deploy",
+    txHash: deployed.txHash
+  });
 
   makeActionRow(actionRows, {
     action: "deploy",
@@ -856,6 +1074,541 @@ async function deployOrReuseSingleton({
   });
 
   return deployed.address;
+}
+
+function getPathValue(value, pathParts) {
+  return pathParts.reduce((current, part) => current?.[part], value);
+}
+
+function asBigInt(value) {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  if (typeof value === "string") return BigInt(value);
+  return BigInt(String(value ?? 0));
+}
+
+function compactDetail(value) {
+  return stableSerialize(value);
+}
+
+function equalAddressValue(current, expected) {
+  return sameAddress(current, expected);
+}
+
+function equalBoolValue(current, expected) {
+  return Boolean(current) === Boolean(expected);
+}
+
+function equalNumberishValue(current, expected) {
+  return asBigInt(current) === asBigInt(expected);
+}
+
+function normalizeRiskParams(params) {
+  return {
+    ltvBps: asBigInt(params?.ltvBps ?? params?.[0] ?? 0),
+    liquidationThresholdBps: asBigInt(params?.liquidationThresholdBps ?? params?.[1] ?? 0),
+    liquidationBonusBps: asBigInt(params?.liquidationBonusBps ?? params?.[2] ?? 0),
+    supplyCap: asBigInt(params?.supplyCap ?? params?.[3] ?? 0),
+    borrowCap: asBigInt(params?.borrowCap ?? params?.[4] ?? 0)
+  };
+}
+
+function riskParamsMatch(current, expected) {
+  return (
+    current.ltvBps === expected.ltvBps
+    && current.liquidationThresholdBps === expected.liquidationThresholdBps
+    && current.liquidationBonusBps === expected.liquidationBonusBps
+    && current.supplyCap === expected.supplyCap
+    && current.borrowCap === expected.borrowCap
+  );
+}
+
+function normalizeTokenConfig(config) {
+  return {
+    hubToken: String(config?.hubToken ?? config?.[0] ?? ZERO_ADDRESS),
+    spokeToken: String(config?.spokeToken ?? config?.[1] ?? ZERO_ADDRESS),
+    decimals: Number(config?.decimals ?? config?.[2] ?? 0),
+    risk: normalizeRiskParams(config?.risk ?? config?.[3] ?? {}),
+    bridgeAdapterId: String(config?.bridgeAdapterId ?? config?.[4] ?? "0x"),
+    enabled: Boolean(config?.enabled ?? config?.[5] ?? false)
+  };
+}
+
+function tokenConfigMatches(current, expected) {
+  return (
+    sameAddress(current.hubToken, expected.hubToken)
+    && sameAddress(current.spokeToken, expected.spokeToken)
+    && current.decimals === expected.decimals
+    && riskParamsMatch(current.risk, expected.risk)
+    && current.bridgeAdapterId.toLowerCase() === expected.bridgeAdapterId.toLowerCase()
+    && current.enabled === expected.enabled
+  );
+}
+
+function normalizeFeedConfig(config) {
+  return {
+    feed: String(config?.feed ?? config?.[0] ?? ZERO_ADDRESS),
+    heartbeat: Number(config?.heartbeat ?? config?.[1] ?? 0),
+    feedDecimals: Number(config?.feedDecimals ?? config?.[2] ?? 0),
+    minPriceE8: asBigInt(config?.minPriceE8 ?? config?.[3] ?? 0),
+    maxPriceE8: asBigInt(config?.maxPriceE8 ?? config?.[4] ?? 0),
+    enabled: Boolean(config?.enabled ?? config?.[5] ?? false)
+  };
+}
+
+function feedConfigMatches(current, expected) {
+  return (
+    sameAddress(current.feed, expected.feed)
+    && current.heartbeat === expected.heartbeat
+    && current.minPriceE8 === expected.minPriceE8
+    && current.maxPriceE8 === expected.maxPriceE8
+    && current.enabled === expected.enabled
+  );
+}
+
+function normalizeRecoveryConfig(config) {
+  return {
+    recoveryVault: String(config?.recoveryVault ?? config?.[0] ?? ZERO_ADDRESS),
+    pendingFinalizeTtl: asBigInt(config?.pendingFinalizeTtl ?? config?.[1] ?? 0),
+    recoverySweepDelay: asBigInt(config?.recoverySweepDelay ?? config?.[2] ?? 0)
+  };
+}
+
+function recoveryConfigMatches(current, expected) {
+  return (
+    sameAddress(current.recoveryVault, expected.recoveryVault)
+    && current.pendingFinalizeTtl === expected.pendingFinalizeTtl
+    && current.recoverySweepDelay === expected.recoverySweepDelay
+  );
+}
+
+function normalizeAcrossBridgeRoute(route) {
+  return {
+    spokePool: String(route?.spokePool ?? route?.[0] ?? ZERO_ADDRESS),
+    hubToken: String(route?.hubToken ?? route?.[1] ?? ZERO_ADDRESS),
+    exclusiveRelayer: String(route?.exclusiveRelayer ?? route?.[2] ?? ZERO_ADDRESS),
+    fillDeadlineBuffer: Number(route?.fillDeadlineBuffer ?? route?.[3] ?? 0),
+    maxQuoteAge: Number(route?.maxQuoteAge ?? route?.[4] ?? 0),
+    enabled: Boolean(route?.enabled ?? route?.[5] ?? false)
+  };
+}
+
+function acrossBridgeRouteMatches(current, expected) {
+  return (
+    sameAddress(current.spokePool, expected.spokePool)
+    && sameAddress(current.hubToken, expected.hubToken)
+    && sameAddress(current.exclusiveRelayer, expected.exclusiveRelayer)
+    && current.fillDeadlineBuffer === expected.fillDeadlineBuffer
+    && current.maxQuoteAge === expected.maxQuoteAge
+    && current.enabled === expected.enabled
+  );
+}
+
+async function ensureConfigValue({
+  network,
+  chainId,
+  key,
+  targetAddress,
+  actionRows,
+  readCurrent,
+  expected,
+  matches,
+  writeConfig,
+  describeCurrent = compactDetail,
+  describeExpected = compactDetail
+}) {
+  const current = await readCurrent();
+  if (matches(current, expected)) {
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key,
+      proxy: targetAddress,
+      target: targetAddress,
+      detail: compactDetail({
+        current: describeCurrent(current),
+        expected: describeExpected(expected)
+      })
+    });
+    return current;
+  }
+
+  const tx = await writeConfig();
+  const observed = await readCurrent();
+  if (!matches(observed, expected)) {
+    throw new Error(
+      `${key} mismatch expected=${describeExpected(expected)} got=${describeCurrent(observed)}`
+    );
+  }
+
+  makeConfigActionRow(actionRows, {
+    action: "config-write",
+    network,
+    chainId,
+    key,
+    proxy: targetAddress,
+    target: targetAddress,
+    tx,
+    detail: compactDetail({
+      before: describeCurrent(current),
+      after: describeCurrent(observed)
+    })
+  });
+  return observed;
+}
+
+async function ensureRoleGranted({
+  client,
+  publicClient,
+  address,
+  abi,
+  role,
+  account,
+  network,
+  chainId,
+  key,
+  actionRows
+}) {
+  return ensureConfigValue({
+    network,
+    chainId,
+    key,
+    targetAddress: address,
+    actionRows,
+    readCurrent: () => read(publicClient, {
+      address,
+      abi,
+      functionName: "hasRole",
+      args: [role, account]
+    }),
+    expected: true,
+    matches: equalBoolValue,
+    writeConfig: () => write(client, publicClient, {
+      address,
+      abi,
+      functionName: "grantRole",
+      args: [role, account]
+    })
+  });
+}
+
+async function ensureAcrossBridgeRoute({
+  client,
+  publicClient,
+  address,
+  abi,
+  localToken,
+  expected,
+  network,
+  chainId,
+  key,
+  actionRows
+}) {
+  return ensureConfigValue({
+    network,
+    chainId,
+    key,
+    targetAddress: address,
+    actionRows,
+    readCurrent: async () => normalizeAcrossBridgeRoute(await read(publicClient, {
+      address,
+      abi,
+      functionName: "routes",
+      args: [localToken]
+    })),
+    expected,
+    matches: acrossBridgeRouteMatches,
+    writeConfig: () => write(client, publicClient, {
+      address,
+      abi,
+      functionName: "setRoute",
+      args: [
+        localToken,
+        expected.spokePool,
+        expected.hubToken,
+        expected.exclusiveRelayer,
+        expected.fillDeadlineBuffer,
+        expected.maxQuoteAge,
+        expected.enabled
+      ]
+    })
+  });
+}
+
+async function ensureDispatcherRouteConfig({
+  client,
+  publicClient,
+  address,
+  abi,
+  hubAsset,
+  destinationChainId,
+  expected,
+  network,
+  chainId,
+  key,
+  actionRows,
+  label
+}) {
+  const routeStorageKey = await read(publicClient, {
+    address,
+    abi,
+    functionName: "routeKey",
+    args: [hubAsset, BigInt(destinationChainId)]
+  });
+
+  const current = normalizeDispatcherRoute(await read(publicClient, {
+    address,
+    abi,
+    functionName: "routes",
+    args: [routeStorageKey]
+  }));
+
+  if (dispatcherRouteMatches(current, expected)) {
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key,
+      proxy: address,
+      target: address,
+      detail: compactDetail({ label, current, expected })
+    });
+    return current;
+  }
+
+  const tx = await write(client, publicClient, {
+    address,
+    abi,
+    functionName: "setRoute",
+    args: [
+      hubAsset,
+      BigInt(destinationChainId),
+      expected.spokePool,
+      expected.spokeToken,
+      expected.spokeReceiver,
+      expected.fillDeadlineBuffer,
+      expected.maxQuoteAge,
+      expected.enabled
+    ]
+  });
+
+  const observed = await waitForDispatcherRoute({
+    publicClient,
+    dispatcher: address,
+    dispatcherAbi: abi,
+    key: routeStorageKey,
+    expected,
+    label
+  });
+
+  makeConfigActionRow(actionRows, {
+    action: "config-write",
+    network,
+    chainId,
+    key,
+    proxy: address,
+    target: address,
+    tx,
+    detail: compactDetail({ label, before: current, after: observed })
+  });
+  return observed;
+}
+
+async function ensureTokenRegistered({
+  hubWallet,
+  hubPublic,
+  tokenRegistryAddress,
+  tokenRegistryAbi,
+  hubToken,
+  spokeToken,
+  decimals,
+  risk,
+  bridgeAdapterId,
+  enabled,
+  network,
+  chainId,
+  key,
+  actionRows
+}) {
+  const expected = {
+    hubToken,
+    spokeToken,
+    decimals,
+    risk,
+    bridgeAdapterId,
+    enabled
+  };
+
+  const readCurrent = async () => normalizeTokenConfig(await hubPublic.readContract({
+    address: tokenRegistryAddress,
+    abi: tokenRegistryAbi,
+    functionName: "getConfigByHub",
+    args: [hubToken]
+  }));
+
+  const current = await readCurrent();
+  if (tokenConfigMatches(current, expected)) {
+    makeConfigActionRow(actionRows, {
+      action: "config-skip",
+      network,
+      chainId,
+      key,
+      proxy: tokenRegistryAddress,
+      target: tokenRegistryAddress,
+      detail: compactDetail({ current, expected })
+    });
+    return current;
+  }
+
+  const tx = await write(hubWallet, hubPublic, {
+    address: tokenRegistryAddress,
+    abi: tokenRegistryAbi,
+    functionName: "registerTokenFlat",
+    args: [
+      hubToken,
+      spokeToken,
+      decimals,
+      risk.ltvBps,
+      risk.liquidationThresholdBps,
+      risk.liquidationBonusBps,
+      risk.supplyCap,
+      risk.borrowCap,
+      bridgeAdapterId,
+      enabled
+    ]
+  });
+  await waitForHubTokenConfig({
+    publicClient: hubPublic,
+    tokenRegistryAddress,
+    tokenRegistryAbi,
+    hubToken
+  });
+
+  const observed = await readCurrent();
+  if (!tokenConfigMatches(observed, expected)) {
+    throw new Error(
+      `${key} mismatch expected=${compactDetail(expected)} got=${compactDetail(observed)}`
+    );
+  }
+
+  makeConfigActionRow(actionRows, {
+    action: "config-write",
+    network,
+    chainId,
+    key,
+    proxy: tokenRegistryAddress,
+    target: tokenRegistryAddress,
+    tx,
+    detail: compactDetail({ before: current, after: observed })
+  });
+  return observed;
+}
+
+async function repairManifestFromDeployment({
+  manifest,
+  deploymentJson,
+  hubPublic,
+  hubChainId,
+  hubNetwork,
+  spokeRuntime
+}) {
+  if (!deploymentJson) return;
+
+  const hubUupsEntries = [
+    ["hub.tokenRegistry", "TokenRegistry", deploymentJson?.hub?.tokenRegistry],
+    ["hub.rateModel", "KinkInterestRateModel", deploymentJson?.hub?.rateModel],
+    ["hub.moneyMarket", "HubMoneyMarket", deploymentJson?.hub?.moneyMarket],
+    ["hub.riskManager", "HubRiskManager", deploymentJson?.hub?.riskManager],
+    ["hub.intentInbox", "HubIntentInbox", deploymentJson?.hub?.intentInbox],
+    ["hub.lockManager", "HubLockManager", deploymentJson?.hub?.lockManager],
+    ["hub.custody", "HubCustody", deploymentJson?.hub?.custody],
+    ["hub.groth16VerifierAdapter", "Groth16VerifierAdapter", deploymentJson?.hub?.groth16VerifierAdapter],
+    ["hub.verifier", "Verifier", deploymentJson?.hub?.verifier],
+    ["hub.settlement", "HubSettlement", deploymentJson?.hub?.settlement],
+    ["hub.depositProofBackend", "AcrossDepositProofBackend", deploymentJson?.hub?.depositProofBackend],
+    ["hub.borrowFillProofBackend", "AcrossBorrowFillProofBackend", deploymentJson?.hub?.borrowFillProofBackend],
+    ["hub.hubAcrossBorrowFinalizer", "HubAcrossBorrowFinalizer", deploymentJson?.hub?.hubAcrossBorrowFinalizer],
+    ["hub.hubAcrossBorrowDispatcher", "HubAcrossBorrowDispatcher", deploymentJson?.hub?.hubAcrossBorrowDispatcher],
+    ["hub.hubAcrossReceiver", "HubAcrossReceiver", deploymentJson?.hub?.hubAcrossReceiver]
+  ];
+
+  const hubSingletonEntries = [
+    ["hub.chainlinkOracle", "ChainlinkPriceOracle", deploymentJson?.hub?.oracle],
+    ["hub.lightClientVerifierAdapter", "ExternalLightClientVerifier", deploymentJson?.hub?.lightClientVerifier],
+    ["hub.acrossDepositEventVerifierAdapter", "ExternalAcrossDepositEventVerifier", deploymentJson?.hub?.acrossDepositEventVerifier],
+    ["hub.acrossBorrowFillEventVerifierAdapter", "ExternalAcrossBorrowFillEventVerifier", deploymentJson?.hub?.acrossBorrowFillEventVerifier],
+    ["hub.depositProofVerifier", "DepositProofVerifier", deploymentJson?.hub?.depositProofVerifier],
+    ["hub.borrowFillProofVerifier", "BorrowFillProofVerifier", deploymentJson?.hub?.borrowFillProofVerifier]
+  ];
+
+  const spokeUupsEntries = spokeRuntime.flatMap((spoke) => ([
+    [`spoke.${spoke.network}.portal`, "SpokePortal", deploymentJson?.spokes?.[spoke.network]?.portal, spoke],
+    [`spoke.${spoke.network}.borrowReceiver`, "SpokeAcrossBorrowReceiver", deploymentJson?.spokes?.[spoke.network]?.borrowReceiver, spoke],
+    [`spoke.${spoke.network}.bridgeAdapter`, "AcrossBridgeAdapter", deploymentJson?.spokes?.[spoke.network]?.bridgeAdapter, spoke]
+  ]));
+
+  for (const [key, contractName, proxy] of hubUupsEntries) {
+    if (!proxy || !isAddress(proxy)) continue;
+    const code = await hubPublic.getBytecode({ address: proxy });
+    if (!code || code === "0x") continue;
+    const currentImpl = toAddressFromStorage(await hubPublic.getStorageAt({ address: proxy, slot: IMPLEMENTATION_SLOT }));
+    if (!isAddress(currentImpl)) continue;
+    const implCode = await hubPublic.getBytecode({ address: currentImpl });
+    if (!implCode || implCode === "0x") continue;
+    manifest.uups[key] = {
+      ...manifest.uups[key],
+      proxy,
+      implementation: currentImpl,
+      runtimeBytecodeHash: keccak256(implCode),
+      contractName,
+      lastAction: "repair",
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  for (const [key, contractName, address] of hubSingletonEntries) {
+    if (!address || !isAddress(address)) continue;
+    const code = await hubPublic.getBytecode({ address });
+    if (!code || code === "0x") continue;
+    manifest.singletons[key] = {
+      ...manifest.singletons[key],
+      address,
+      runtimeBytecodeHash: keccak256(code),
+      contractName,
+      lastAction: "repair",
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  for (const [key, contractName, proxy, spoke] of spokeUupsEntries) {
+    if (!proxy || !isAddress(proxy)) continue;
+    const code = await spoke.publicClient.getBytecode({ address: proxy });
+    if (!code || code === "0x") continue;
+    const currentImpl = toAddressFromStorage(
+      await spoke.publicClient.getStorageAt({ address: proxy, slot: IMPLEMENTATION_SLOT })
+    );
+    if (!isAddress(currentImpl)) continue;
+    const implCode = await spoke.publicClient.getBytecode({ address: currentImpl });
+    if (!implCode || implCode === "0x") continue;
+    manifest.uups[key] = {
+      ...manifest.uups[key],
+      proxy,
+      implementation: currentImpl,
+      runtimeBytecodeHash: keccak256(implCode),
+      contractName,
+      lastAction: "repair",
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  manifest.metadata = {
+    ...manifest.metadata,
+    deployStrategy: LIVE_DEPLOY_STRATEGY,
+    repairedFromDeploymentAt: new Date().toISOString(),
+    repairedHubNetwork: hubNetwork,
+    repairedHubChainId: hubChainId
+  };
 }
 
 function slugNetwork(network) {
@@ -890,6 +1643,9 @@ async function main() {
   fs.mkdirSync(deploymentsDir, { recursive: true });
 
   const spokeConfigs = SPOKE_NETWORKS.map(resolveSpokeConfig);
+  const slug = `${slugNetwork(HUB_NETWORK)}-${SPOKE_NETWORKS.map(slugNetwork).join("-")}`;
+  const manifestPath = path.join(deploymentsDir, `live-${slug}.manifest.json`);
+  const deploymentPath = path.join(deploymentsDir, `live-${HUB_NETWORK}-hub-${SPOKE_NETWORKS.join("-")}.json`);
 
   const hubAcrossSpokePool = requireAddressEnv(`${HUB_DEFAULTS.envPrefix}_ACROSS_SPOKE_POOL_ADDRESS`);
   const hubTokens = Object.fromEntries(TOKEN_DEFS.map((token) => [token.symbol, resolveTokenAddress(HUB_DEFAULTS.envPrefix, token.symbol)]));
@@ -983,12 +1739,33 @@ async function main() {
   await ensureContractCode(hubPublic, EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER, "HUB_ACROSS_DEPOSIT_EVENT_VERIFIER_ADDRESS");
   await ensureContractCode(hubPublic, EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER, "HUB_ACROSS_BORROW_FILL_EVENT_VERIFIER_ADDRESS");
 
-  const slug = `${slugNetwork(HUB_NETWORK)}-${SPOKE_NETWORKS.map(slugNetwork).join("-")}`;
-  const manifestPath = path.join(deploymentsDir, `live-${slug}.manifest.json`);
-  if (fs.existsSync(manifestPath)) {
-    console.log(`[fresh-deploy] ignoring previous manifest state at ${path.relative(rootDir, manifestPath)}`);
+  const manifest = LIVE_DEPLOY_STRATEGY === "fresh"
+    ? createFreshManifest()
+    : readManifest(manifestPath);
+  if (LIVE_DEPLOY_STRATEGY === "fresh") {
+    if (fs.existsSync(manifestPath)) {
+      console.log(`[deploy] strategy=fresh ignoring previous manifest at ${path.relative(rootDir, manifestPath)}`);
+    } else {
+      console.log(`[deploy] strategy=fresh manifest=${path.relative(rootDir, manifestPath)}`);
+    }
+  } else {
+    console.log(`[deploy] strategy=incremental manifest=${path.relative(rootDir, manifestPath)}`);
+    if (fs.existsSync(deploymentPath)) {
+      const existingDeploymentJson = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
+      await repairManifestFromDeployment({
+        manifest,
+        deploymentJson: existingDeploymentJson,
+        hubPublic,
+        hubChainId: HUB_CHAIN_ID,
+        hubNetwork: HUB_NETWORK,
+        spokeRuntime
+      });
+    }
   }
-  const manifest = createFreshManifest();
+  manifest.metadata = {
+    ...manifest.metadata,
+    deployStrategy: LIVE_DEPLOY_STRATEGY
+  };
   const actionRows = [];
 
   console.log(`Deploying/upgrading hub protocol on ${HUB_DEFAULTS.label}...`);
@@ -1204,23 +1981,65 @@ async function main() {
   const externalDepositAbi = loadArtifact("ExternalAcrossDepositEventVerifier").abi;
   const externalBorrowAbi = loadArtifact("ExternalAcrossBorrowFillEventVerifier").abi;
 
-  await write(hubWallet, hubPublic, {
-    address: lightClientVerifierAdapter,
-    abi: externalLightAbi,
-    functionName: "setVerifier",
-    args: [EXTERNAL_LIGHT_CLIENT_VERIFIER]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.lightClientVerifierAdapter.verifier",
+    targetAddress: lightClientVerifierAdapter,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: lightClientVerifierAdapter,
+      abi: externalLightAbi,
+      functionName: "verifier"
+    }),
+    expected: EXTERNAL_LIGHT_CLIENT_VERIFIER,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: lightClientVerifierAdapter,
+      abi: externalLightAbi,
+      functionName: "setVerifier",
+      args: [EXTERNAL_LIGHT_CLIENT_VERIFIER]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: acrossDepositEventVerifierAdapter,
-    abi: externalDepositAbi,
-    functionName: "setVerifier",
-    args: [EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.acrossDepositEventVerifierAdapter.verifier",
+    targetAddress: acrossDepositEventVerifierAdapter,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: acrossDepositEventVerifierAdapter,
+      abi: externalDepositAbi,
+      functionName: "verifier"
+    }),
+    expected: EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: acrossDepositEventVerifierAdapter,
+      abi: externalDepositAbi,
+      functionName: "setVerifier",
+      args: [EXTERNAL_ACROSS_DEPOSIT_EVENT_VERIFIER]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: acrossBorrowFillEventVerifierAdapter,
-    abi: externalBorrowAbi,
-    functionName: "setVerifier",
-    args: [EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.acrossBorrowFillEventVerifierAdapter.verifier",
+    targetAddress: acrossBorrowFillEventVerifierAdapter,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: acrossBorrowFillEventVerifierAdapter,
+      abi: externalBorrowAbi,
+      functionName: "verifier"
+    }),
+    expected: EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: acrossBorrowFillEventVerifierAdapter,
+      abi: externalBorrowAbi,
+      functionName: "setVerifier",
+      args: [EXTERNAL_ACROSS_BORROW_FILL_EVENT_VERIFIER]
+    })
   });
 
   const configuredLightVerifier = await read(hubPublic, {
@@ -1334,14 +2153,6 @@ async function main() {
   });
   const hubAcrossBorrowDispatcher = hubAcrossBorrowDispatcherDeployment.proxy;
 
-  // Fresh deploy policy: always pin finalizer verifier explicitly after deployments.
-  await write(hubWallet, hubPublic, {
-    address: hubAcrossBorrowFinalizer,
-    abi: loadArtifact("HubAcrossBorrowFinalizer").abi,
-    functionName: "setVerifier",
-    args: [borrowFillProofVerifier]
-  });
-
   const hubAcrossReceiverDeployment = await deployOrUpgradeUUPS({
     key: `hub.hubAcrossReceiver`,
     network: HUB_NETWORK,
@@ -1384,8 +2195,154 @@ async function main() {
   const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
   const hubAcrossBorrowFinalizerAbi = loadArtifact("HubAcrossBorrowFinalizer").abi;
   const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
+  const hubAcrossReceiverAbi = loadArtifact("HubAcrossReceiver").abi;
   const spokeBorrowReceiverAbi = loadArtifact("SpokeAcrossBorrowReceiver").abi;
   const chainlinkOracleAbi = loadArtifact("ChainlinkPriceOracle").abi;
+
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.settlement.verifier",
+    targetAddress: settlement,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "verifier"
+    }),
+    expected: verifier,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "setVerifier",
+      args: [verifier]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.hubAcrossBorrowFinalizer.verifier",
+    targetAddress: hubAcrossBorrowFinalizer,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: hubAcrossBorrowFinalizer,
+      abi: hubAcrossBorrowFinalizerAbi,
+      functionName: "verifier"
+    }),
+    expected: borrowFillProofVerifier,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossBorrowFinalizer,
+      abi: hubAcrossBorrowFinalizerAbi,
+      functionName: "setVerifier",
+      args: [borrowFillProofVerifier]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.hubAcrossBorrowDispatcher.hubFinalizer",
+    targetAddress: hubAcrossBorrowDispatcher,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "hubFinalizer"
+    }),
+    expected: hubAcrossBorrowFinalizer,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "setHubFinalizer",
+      args: [hubAcrossBorrowFinalizer]
+    })
+  });
+  await waitForAddressReadback({
+    publicClient: hubPublic,
+    targetAddress: hubAcrossBorrowDispatcher,
+    abi: hubAcrossBorrowDispatcherAbi,
+    functionName: "hubFinalizer",
+    expected: hubAcrossBorrowFinalizer,
+    label: "HubAcrossBorrowDispatcher hubFinalizer"
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.hubAcrossReceiver.verifier",
+    targetAddress: hubAcrossReceiver,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: hubAcrossReceiver,
+      abi: hubAcrossReceiverAbi,
+      functionName: "verifier"
+    }),
+    expected: depositProofVerifier,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossReceiver,
+      abi: hubAcrossReceiverAbi,
+      functionName: "setVerifier",
+      args: [depositProofVerifier]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.hubAcrossReceiver.spokePool",
+    targetAddress: hubAcrossReceiver,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: hubAcrossReceiver,
+      abi: hubAcrossReceiverAbi,
+      functionName: "spokePool"
+    }),
+    expected: hubAcrossSpokePool,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossReceiver,
+      abi: hubAcrossReceiverAbi,
+      functionName: "setSpokePool",
+      args: [hubAcrossSpokePool]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.hubAcrossReceiver.recoveryConfig",
+    targetAddress: hubAcrossReceiver,
+    actionRows,
+    readCurrent: async () => normalizeRecoveryConfig({
+      recoveryVault: await read(hubPublic, {
+        address: hubAcrossReceiver,
+        abi: hubAcrossReceiverAbi,
+        functionName: "recoveryVault"
+      }),
+      pendingFinalizeTtl: await read(hubPublic, {
+        address: hubAcrossReceiver,
+        abi: hubAcrossReceiverAbi,
+        functionName: "pendingFinalizeTtl"
+      }),
+      recoverySweepDelay: await read(hubPublic, {
+        address: hubAcrossReceiver,
+        abi: hubAcrossReceiverAbi,
+        functionName: "recoverySweepDelay"
+      })
+    }),
+    expected: normalizeRecoveryConfig({
+      recoveryVault: HUB_RECOVERY_VAULT,
+      pendingFinalizeTtl: HUB_PENDING_FINALIZE_TTL,
+      recoverySweepDelay: HUB_RECOVERY_SWEEP_DELAY
+    }),
+    matches: recoveryConfigMatches,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossReceiver,
+      abi: hubAcrossReceiverAbi,
+      functionName: "setRecoveryConfig",
+      args: [HUB_RECOVERY_VAULT, HUB_PENDING_FINALIZE_TTL, HUB_RECOVERY_SWEEP_DELAY]
+    })
+  });
 
   const bridgeAdapterId = keccak256(stringToHex("across-v3"));
   const riskBase = [7500n, 8000n, 10500n];
@@ -1450,41 +2407,126 @@ async function main() {
     });
     const bridgeAdapter = bridgeAdapterDeployment.proxy;
 
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: portal,
-      abi: portalAbi,
-      functionName: "setBridgeAdapter",
-      args: [bridgeAdapter]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.portal.bridgeAdapter`,
+      targetAddress: portal,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: portal,
+        abi: portalAbi,
+        functionName: "bridgeAdapter"
+      }),
+      expected: bridgeAdapter,
+      matches: equalAddressValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: portal,
+        abi: portalAbi,
+        functionName: "setBridgeAdapter",
+        args: [bridgeAdapter]
+      })
     });
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: portal,
-      abi: portalAbi,
-      functionName: "setHubRecipient",
-      args: [hubAcrossReceiver]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.portal.hubRecipient`,
+      targetAddress: portal,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: portal,
+        abi: portalAbi,
+        functionName: "hubRecipient"
+      }),
+      expected: hubAcrossReceiver,
+      matches: equalAddressValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: portal,
+        abi: portalAbi,
+        functionName: "setHubRecipient",
+        args: [hubAcrossReceiver]
+      })
     });
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: bridgeAdapter,
-      abi: acrossBridgeAdapterAbi,
-      functionName: "setAllowedCaller",
-      args: [portal, true]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.bridgeAdapter.allowedCaller.${portal}`,
+      targetAddress: bridgeAdapter,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: bridgeAdapter,
+        abi: acrossBridgeAdapterAbi,
+        functionName: "allowedCaller",
+        args: [portal]
+      }),
+      expected: true,
+      matches: equalBoolValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: bridgeAdapter,
+        abi: acrossBridgeAdapterAbi,
+        functionName: "setAllowedCaller",
+        args: [portal, true]
+      })
     });
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: borrowReceiver,
-      abi: spokeBorrowReceiverAbi,
-      functionName: "setExpectedHubDispatcher",
-      args: [hubAcrossBorrowDispatcher]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.borrowReceiver.expectedHubDispatcher`,
+      targetAddress: borrowReceiver,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "expectedHubDispatcher"
+      }),
+      expected: hubAcrossBorrowDispatcher,
+      matches: equalAddressValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "setExpectedHubDispatcher",
+        args: [hubAcrossBorrowDispatcher]
+      })
     });
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: borrowReceiver,
-      abi: spokeBorrowReceiverAbi,
-      functionName: "setExpectedHubFinalizer",
-      args: [hubAcrossBorrowFinalizer]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.borrowReceiver.expectedHubFinalizer`,
+      targetAddress: borrowReceiver,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "expectedHubFinalizer"
+      }),
+      expected: hubAcrossBorrowFinalizer,
+      matches: equalAddressValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "setExpectedHubFinalizer",
+        args: [hubAcrossBorrowFinalizer]
+      })
     });
-    await write(spoke.walletClient, spoke.publicClient, {
-      address: borrowReceiver,
-      abi: spokeBorrowReceiverAbi,
-      functionName: "setExpectedHubChainId",
-      args: [BigInt(HUB_CHAIN_ID)]
+    await ensureConfigValue({
+      network: spoke.network,
+      chainId: spoke.chainId,
+      key: `spoke.${spoke.network}.borrowReceiver.expectedHubChainId`,
+      targetAddress: borrowReceiver,
+      actionRows,
+      readCurrent: () => read(spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "expectedHubChainId"
+      }),
+      expected: BigInt(HUB_CHAIN_ID),
+      matches: equalNumberishValue,
+      writeConfig: () => write(spoke.walletClient, spoke.publicClient, {
+        address: borrowReceiver,
+        abi: spokeBorrowReceiverAbi,
+        functionName: "setExpectedHubChainId",
+        args: [BigInt(HUB_CHAIN_ID)]
+      })
     });
 
     const receiverDispatcher = await read(spoke.publicClient, {
@@ -1513,31 +2555,69 @@ async function main() {
     }
 
     for (const token of TOKEN_DEFS) {
-      await write(spoke.walletClient, spoke.publicClient, {
+      await ensureAcrossBridgeRoute({
+        client: spoke.walletClient,
+        publicClient: spoke.publicClient,
         address: bridgeAdapter,
         abi: acrossBridgeAdapterAbi,
-        functionName: "setRoute",
-        args: [
-          spokeTokenMap[spoke.network][token.symbol],
-          spokeAcrossPools[spoke.network],
-          hubTokens[token.symbol],
-          true
-        ]
+        localToken: spokeTokenMap[spoke.network][token.symbol],
+        expected: normalizeAcrossBridgeRoute({
+          spokePool: spokeAcrossPools[spoke.network],
+          hubToken: hubTokens[token.symbol],
+          exclusiveRelayer: ZERO_ADDRESS,
+          fillDeadlineBuffer: 0,
+          maxQuoteAge: 0,
+          enabled: true
+        }),
+        network: spoke.network,
+        chainId: spoke.chainId,
+        key: `spoke.${spoke.network}.bridgeAdapter.route.${token.symbol}`,
+        actionRows
       });
     }
 
-    await write(hubWallet, hubPublic, {
-      address: depositProofBackend,
-      abi: depositProofBackendAbi,
-      functionName: "setSourceSpokePool",
-      args: [BigInt(spoke.chainId), spokeAcrossPools[spoke.network]]
+    await ensureConfigValue({
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.depositProofBackend.sourceSpokePool.${spoke.network}`,
+      targetAddress: depositProofBackend,
+      actionRows,
+      readCurrent: () => read(hubPublic, {
+        address: depositProofBackend,
+        abi: depositProofBackendAbi,
+        functionName: "sourceSpokePoolByChain",
+        args: [BigInt(spoke.chainId)]
+      }),
+      expected: spokeAcrossPools[spoke.network],
+      matches: equalAddressValue,
+      writeConfig: () => write(hubWallet, hubPublic, {
+        address: depositProofBackend,
+        abi: depositProofBackendAbi,
+        functionName: "setSourceSpokePool",
+        args: [BigInt(spoke.chainId), spokeAcrossPools[spoke.network]]
+      })
     });
 
-    await write(hubWallet, hubPublic, {
-      address: borrowFillProofBackend,
-      abi: borrowFillProofBackendAbi,
-      functionName: "setSourceReceiver",
-      args: [BigInt(spoke.chainId), borrowReceiver]
+    await ensureConfigValue({
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.borrowFillProofBackend.sourceReceiver.${spoke.network}`,
+      targetAddress: borrowFillProofBackend,
+      actionRows,
+      readCurrent: () => read(hubPublic, {
+        address: borrowFillProofBackend,
+        abi: borrowFillProofBackendAbi,
+        functionName: "sourceReceiverByChain",
+        args: [BigInt(spoke.chainId)]
+      }),
+      expected: borrowReceiver,
+      matches: equalAddressValue,
+      writeConfig: () => write(hubWallet, hubPublic, {
+        address: borrowFillProofBackend,
+        abi: borrowFillProofBackendAbi,
+        functionName: "setSourceReceiver",
+        args: [BigInt(spoke.chainId), borrowReceiver]
+      })
     });
     await waitForAddressReadback({
       publicClient: hubPublic,
@@ -1567,11 +2647,25 @@ async function main() {
     };
   }
 
-  await write(hubWallet, hubPublic, {
-    address: borrowFillProofBackend,
-    abi: borrowFillProofBackendAbi,
-    functionName: "setDestinationDispatcher",
-    args: [hubAcrossBorrowDispatcher]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.borrowFillProofBackend.destinationDispatcher",
+    targetAddress: borrowFillProofBackend,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: borrowFillProofBackend,
+      abi: borrowFillProofBackendAbi,
+      functionName: "destinationDispatcher"
+    }),
+    expected: hubAcrossBorrowDispatcher,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: borrowFillProofBackend,
+      abi: borrowFillProofBackendAbi,
+      functionName: "setDestinationDispatcher",
+      args: [hubAcrossBorrowDispatcher]
+    })
   });
   await waitForAddressReadback({
     publicClient: hubPublic,
@@ -1594,45 +2688,74 @@ async function main() {
   console.log("Configuring hub registry/risk/markets + routes...");
   for (const token of TOKEN_DEFS) {
     const hubToken = hubTokens[token.symbol];
-    await write(hubWallet, hubPublic, {
-      address: tokenRegistry,
-      abi: tokenRegistryAbi,
-      functionName: "setTokenBehavior",
-      args: [hubToken, 1]
-    });
-
-    for (const spoke of spokeRuntime) {
-      await write(hubWallet, hubPublic, {
+    await ensureConfigValue({
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.tokenRegistry.tokenBehavior.hub.${token.symbol}`,
+      targetAddress: tokenRegistry,
+      actionRows,
+      readCurrent: () => read(hubPublic, {
+        address: tokenRegistry,
+        abi: tokenRegistryAbi,
+        functionName: "tokenBehaviorByToken",
+        args: [hubToken]
+      }),
+      expected: 1n,
+      matches: equalNumberishValue,
+      writeConfig: () => write(hubWallet, hubPublic, {
         address: tokenRegistry,
         abi: tokenRegistryAbi,
         functionName: "setTokenBehavior",
-        args: [spokeTokenMap[spoke.network][token.symbol], 1]
+        args: [hubToken, 1]
+      })
+    });
+
+    for (const spoke of spokeRuntime) {
+      await ensureConfigValue({
+        network: HUB_NETWORK,
+        chainId: HUB_CHAIN_ID,
+        key: `hub.tokenRegistry.tokenBehavior.${spoke.network}.${token.symbol}`,
+        targetAddress: tokenRegistry,
+        actionRows,
+        readCurrent: () => read(hubPublic, {
+          address: tokenRegistry,
+          abi: tokenRegistryAbi,
+          functionName: "tokenBehaviorByToken",
+          args: [spokeTokenMap[spoke.network][token.symbol]]
+        }),
+        expected: 1n,
+        matches: equalNumberishValue,
+        writeConfig: () => write(hubWallet, hubPublic, {
+          address: tokenRegistry,
+          abi: tokenRegistryAbi,
+          functionName: "setTokenBehavior",
+          args: [spokeTokenMap[spoke.network][token.symbol], 1]
+        })
       });
     }
 
     const firstSpoke = spokeRuntime[0];
-    await write(hubWallet, hubPublic, {
-      address: tokenRegistry,
-      abi: tokenRegistryAbi,
-      functionName: "registerTokenFlat",
-      args: [
-        hubToken,
-        spokeTokenMap[firstSpoke.network][token.symbol],
-        token.decimals,
-        riskBase[0],
-        riskBase[1],
-        riskBase[2],
-        token.supplyCap,
-        token.borrowCap,
-        bridgeAdapterId,
-        true
-      ]
-    });
-    await waitForHubTokenConfig({
-      publicClient: hubPublic,
+    await ensureTokenRegistered({
+      hubWallet,
+      hubPublic,
       tokenRegistryAddress: tokenRegistry,
       tokenRegistryAbi,
-      hubToken
+      hubToken,
+      spokeToken: spokeTokenMap[firstSpoke.network][token.symbol],
+      decimals: token.decimals,
+      risk: normalizeRiskParams({
+        ltvBps: riskBase[0],
+        liquidationThresholdBps: riskBase[1],
+        liquidationBonusBps: riskBase[2],
+        supplyCap: token.supplyCap,
+        borrowCap: token.borrowCap
+      }),
+      bridgeAdapterId,
+      enabled: true,
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.tokenRegistry.register.${token.symbol}`,
+      actionRows
     });
 
     for (const spoke of spokeRuntime) {
@@ -1644,15 +2767,39 @@ async function main() {
         chainId: spoke.chainId,
         hubToken,
         spokeDecimals: spokeTokenDecimals[spoke.network][token.symbol],
-        spokeToken: spokeTokenMap[spoke.network][token.symbol]
+        spokeToken: spokeTokenMap[spoke.network][token.symbol],
+        network: HUB_NETWORK,
+        actionRows,
+        actionKey: `hub.tokenRegistry.route.${token.symbol}.${spoke.network}`
       });
     }
 
-    await write(hubWallet, hubPublic, {
-      address: riskManager,
-      abi: riskAbi,
-      functionName: "setRiskParamsFlat",
-      args: [hubToken, riskBase[0], riskBase[1], riskBase[2], token.supplyCap, token.borrowCap]
+    await ensureConfigValue({
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.riskManager.params.${token.symbol}`,
+      targetAddress: riskManager,
+      actionRows,
+      readCurrent: async () => normalizeRiskParams(await read(hubPublic, {
+        address: riskManager,
+        abi: riskAbi,
+        functionName: "riskParams",
+        args: [hubToken]
+      })),
+      expected: normalizeRiskParams({
+        ltvBps: riskBase[0],
+        liquidationThresholdBps: riskBase[1],
+        liquidationBonusBps: riskBase[2],
+        supplyCap: token.supplyCap,
+        borrowCap: token.borrowCap
+      }),
+      matches: riskParamsMatch,
+      writeConfig: () => write(hubWallet, hubPublic, {
+        address: riskManager,
+        abi: riskAbi,
+        functionName: "setRiskParamsFlat",
+        args: [hubToken, riskBase[0], riskBase[1], riskBase[2], token.supplyCap, token.borrowCap]
+      })
     });
 
     await ensureMarketInitialized({
@@ -1660,114 +2807,289 @@ async function main() {
       hubPublic,
       moneyMarketAddress: moneyMarket,
       marketAbi,
-      asset: hubToken
+      asset: hubToken,
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      actionRows,
+      actionKey: `hub.moneyMarket.initialize.${token.symbol}`
     });
 
     const feedCfg = resolveFeedConfig(HUB_DEFAULTS.envPrefix, token.symbol);
-    await write(hubWallet, hubPublic, {
-      address: oracle,
-      abi: chainlinkOracleAbi,
-      functionName: "setFeed",
-      args: [hubToken, feedCfg.feed, feedCfg.heartbeat, feedCfg.minPriceE8, feedCfg.maxPriceE8]
+    await ensureConfigValue({
+      network: HUB_NETWORK,
+      chainId: HUB_CHAIN_ID,
+      key: `hub.oracle.feed.${token.symbol}`,
+      targetAddress: oracle,
+      actionRows,
+      readCurrent: async () => normalizeFeedConfig(await read(hubPublic, {
+        address: oracle,
+        abi: chainlinkOracleAbi,
+        functionName: "feedConfigByAsset",
+        args: [hubToken]
+      })),
+      expected: normalizeFeedConfig({
+        feed: feedCfg.feed,
+        heartbeat: feedCfg.heartbeat,
+        minPriceE8: feedCfg.minPriceE8,
+        maxPriceE8: feedCfg.maxPriceE8,
+        enabled: true
+      }),
+      matches: feedConfigMatches,
+      writeConfig: () => write(hubWallet, hubPublic, {
+        address: oracle,
+        abi: chainlinkOracleAbi,
+        functionName: "setFeed",
+        args: [hubToken, feedCfg.feed, feedCfg.heartbeat, feedCfg.minPriceE8, feedCfg.maxPriceE8]
+      })
     });
   }
 
-  await write(hubWallet, hubPublic, {
-    address: moneyMarket,
-    abi: marketAbi,
-    functionName: "setRiskManager",
-    args: [riskManager]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.moneyMarket.riskManager",
+    targetAddress: moneyMarket,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: moneyMarket,
+      abi: marketAbi,
+      functionName: "riskManager"
+    }),
+    expected: riskManager,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: moneyMarket,
+      abi: marketAbi,
+      functionName: "setRiskManager",
+      args: [riskManager]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: moneyMarket,
-    abi: marketAbi,
-    functionName: "setSettlement",
-    args: [settlement]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.moneyMarket.settlement",
+    targetAddress: moneyMarket,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: moneyMarket,
+      abi: marketAbi,
+      functionName: "settlement"
+    }),
+    expected: settlement,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: moneyMarket,
+      abi: marketAbi,
+      functionName: "setSettlement",
+      args: [settlement]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: riskManager,
-    abi: riskAbi,
-    functionName: "setLockManager",
-    args: [lockManager]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.riskManager.lockManager",
+    targetAddress: riskManager,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: riskManager,
+      abi: riskAbi,
+      functionName: "lockManager"
+    }),
+    expected: lockManager,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: riskManager,
+      abi: riskAbi,
+      functionName: "setLockManager",
+      args: [lockManager]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: intentInbox,
-    abi: inboxAbi,
-    functionName: "setConsumer",
-    args: [lockManager, true]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.intentInbox.consumer.lockManager",
+    targetAddress: intentInbox,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: intentInbox,
+      abi: inboxAbi,
+      functionName: "isConsumer",
+      args: [lockManager]
+    }),
+    expected: true,
+    matches: equalBoolValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: intentInbox,
+      abi: inboxAbi,
+      functionName: "setConsumer",
+      args: [lockManager, true]
+    })
   });
-  await write(hubWallet, hubPublic, {
-    address: lockManager,
-    abi: lockAbi,
-    functionName: "setSettlement",
-    args: [settlement]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.lockManager.settlement",
+    targetAddress: lockManager,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: lockManager,
+      abi: lockAbi,
+      functionName: "settlement"
+    }),
+    expected: settlement,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: lockManager,
+      abi: lockAbi,
+      functionName: "setSettlement",
+      args: [settlement]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.settlement.moneyMarket",
+    targetAddress: settlement,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "moneyMarket"
+    }),
+    expected: moneyMarket,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "setMoneyMarket",
+      args: [moneyMarket]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.settlement.custody",
+    targetAddress: settlement,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "custody"
+    }),
+    expected: custody,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "setCustody",
+      args: [custody]
+    })
+  });
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.settlement.lockManager",
+    targetAddress: settlement,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "lockManager"
+    }),
+    expected: lockManager,
+    matches: equalAddressValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: settlement,
+      abi: settlementAbi,
+      functionName: "setLockManager",
+      args: [lockManager]
+    })
   });
 
   const CANONICAL_BRIDGE_RECEIVER_ROLE = keccak256(stringToHex("CANONICAL_BRIDGE_RECEIVER_ROLE"));
   const SETTLEMENT_ROLE = keccak256(stringToHex("SETTLEMENT_ROLE"));
   const PROOF_FILL_ROLE = keccak256(stringToHex("PROOF_FILL_ROLE"));
 
-  await write(hubWallet, hubPublic, {
+  await ensureRoleGranted({
+    client: hubWallet,
+    publicClient: hubPublic,
     address: custody,
     abi: custodyAbi,
-    functionName: "grantRole",
-    args: [CANONICAL_BRIDGE_RECEIVER_ROLE, hubAcrossReceiver]
+    role: CANONICAL_BRIDGE_RECEIVER_ROLE,
+    account: hubAcrossReceiver,
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.custody.role.canonicalBridgeReceiver",
+    actionRows
   });
-  await write(hubWallet, hubPublic, {
+  await ensureRoleGranted({
+    client: hubWallet,
+    publicClient: hubPublic,
     address: custody,
     abi: custodyAbi,
-    functionName: "grantRole",
-    args: [SETTLEMENT_ROLE, settlement]
+    role: SETTLEMENT_ROLE,
+    account: settlement,
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.custody.role.settlement",
+    actionRows
   });
-  await write(hubWallet, hubPublic, {
+  await ensureRoleGranted({
+    client: hubWallet,
+    publicClient: hubPublic,
     address: settlement,
     abi: settlementAbi,
-    functionName: "grantRole",
-    args: [PROOF_FILL_ROLE, hubAcrossBorrowFinalizer]
+    role: PROOF_FILL_ROLE,
+    account: hubAcrossBorrowFinalizer,
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: "hub.settlement.role.proofFill",
+    actionRows
   });
 
-  await write(hubWallet, hubPublic, {
-    address: hubAcrossBorrowDispatcher,
-    abi: hubAcrossBorrowDispatcherAbi,
-    functionName: "setAllowedCaller",
-    args: [relayer.address, true]
+  await ensureConfigValue({
+    network: HUB_NETWORK,
+    chainId: HUB_CHAIN_ID,
+    key: `hub.hubAcrossBorrowDispatcher.allowedCaller.${relayer.address}`,
+    targetAddress: hubAcrossBorrowDispatcher,
+    actionRows,
+    readCurrent: () => read(hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "allowedCaller",
+      args: [relayer.address]
+    }),
+    expected: true,
+    matches: equalBoolValue,
+    writeConfig: () => write(hubWallet, hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "setAllowedCaller",
+      args: [relayer.address, true]
+    })
   });
 
   for (const token of TOKEN_DEFS) {
     for (const spoke of spokeRuntime) {
-      await write(hubWallet, hubPublic, {
-        address: hubAcrossBorrowDispatcher,
-        abi: hubAcrossBorrowDispatcherAbi,
-        functionName: "setRoute",
-        args: [
-          hubTokens[token.symbol],
-          BigInt(spoke.chainId),
-          hubAcrossSpokePool,
-          spokeTokenMap[spoke.network][token.symbol],
-          spokeDeployments[spoke.network].borrowReceiver,
-          300_000,
-          0,
-          true
-        ]
-      });
-
-      const key = await read(hubPublic, {
-        address: hubAcrossBorrowDispatcher,
-        abi: hubAcrossBorrowDispatcherAbi,
-        functionName: "routeKey",
-        args: [hubTokens[token.symbol], BigInt(spoke.chainId)]
-      });
-      await waitForDispatcherRoute({
+      await ensureDispatcherRouteConfig({
+        client: hubWallet,
         publicClient: hubPublic,
-        dispatcher: hubAcrossBorrowDispatcher,
-        dispatcherAbi: hubAcrossBorrowDispatcherAbi,
-        key,
-        expected: {
+        address: hubAcrossBorrowDispatcher,
+        abi: hubAcrossBorrowDispatcherAbi,
+        hubAsset: hubTokens[token.symbol],
+        destinationChainId: spoke.chainId,
+        expected: normalizeDispatcherRoute({
           spokePool: hubAcrossSpokePool,
           spokeToken: spokeTokenMap[spoke.network][token.symbol],
           spokeReceiver: spokeDeployments[spoke.network].borrowReceiver,
+          fillDeadlineBuffer: 300_000,
+          maxQuoteAge: 0,
           enabled: true
-        },
+        }),
+        network: HUB_NETWORK,
+        chainId: HUB_CHAIN_ID,
+        key: `hub.hubAcrossBorrowDispatcher.route.${token.symbol}.${spoke.network}`,
+        actionRows,
         label: `token=${token.symbol} spoke=${spoke.network}`
       });
     }
@@ -1847,7 +3169,6 @@ async function main() {
     }
   };
 
-  const deploymentPath = path.join(deploymentsDir, `live-${HUB_NETWORK}-hub-${SPOKE_NETWORKS.join("-")}.json`);
   fs.writeFileSync(deploymentPath, JSON.stringify(deploymentJson, null, 2));
 
   const spokeToHubMapByChain = Object.fromEntries(
